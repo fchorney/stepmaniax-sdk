@@ -184,6 +184,8 @@ void SMXDeviceConnection::CheckReads(string &sError)
         // Linux/macOS: report ID is stripped. We need to prepend it.
         // Infer report ID from size: input reports are small (2 bytes),
         // serial packets are larger.
+
+        /* I think all OSs give you the report number on the first item tbh. Workshop this more later
         uint8_t reportId;
         if(res == 2)
             reportId = 3; // input state report
@@ -192,6 +194,8 @@ void SMXDeviceConnection::CheckReads(string &sError)
 
         rawbuf[0] = reportId;
         HandleUsbPacket(string((char *)rawbuf, res + 1));
+        */
+        HandleUsbPacket(string((char *)rawbuf + 1, res));
 #endif
     }
 }
