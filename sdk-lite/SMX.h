@@ -59,7 +59,15 @@ struct SMXInfo
     // True if we're fully connected to this controller.
     bool m_bConnected = false;
 
+    // True if the physical player jumper is set to player 2.
+    bool m_bIsPlayer2 = false;
+
+    // True if this controller has a serial number assigned.
+    // If false, use SMX_SetSerialNumbers() to assign one.
+    bool m_bHasSerialNumber = false;
+
     // Device serial number (null-terminated hex string).
+    // Only meaningful if m_bHasSerialNumber is true.
     char m_Serial[33] = {};
 
     // Device firmware version.

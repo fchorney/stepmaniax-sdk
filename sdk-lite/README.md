@@ -172,6 +172,39 @@ const char *SMX_Version();
 
 `pad` is 0 for player 1, 1 for player 2.
 
+## SMXInfo fields
+
+```c
+struct SMXInfo {
+    bool m_bConnected;        // true if pad is fully connected
+    bool m_bIsPlayer2;        // physical player jumper setting on the PCB
+    bool m_bHasSerialNumber;  // true if a serial number has been assigned
+    char m_Serial[33];        // hex serial string (only valid if m_bHasSerialNumber)
+    uint16_t m_iFirmwareVersion;
+};
+```
+
+## Handling duplicate player jumpers
+
+Each pad has a physical jumper on the PCB that sets it as P1 or P2. The SDK uses this to assign pads to slot 0 (P1) and slot 1 (P2). If both pads have the same jumper setting, the SDK can't determine which is which and will assign them to slots arbitrarily.
+
+To detect this, check `m_bIsPlayer2` on both pads:
+
+```c
+SMXInfo info[2];
+SMX_GetInfo(0, &info[0]);
+SMX_GetInfo(1, &info[1]);
+
+if(info[0].m_bConnected && info[1].m_bConnected &&
+   info[0].m_bIsPlayer2 == info[1].m_bIsPlayer2)
+{
+    // Both pads have the same jumper setting.
+    // Use serial numbers to tell them apart.
+}
+```
+
+If pads don't have serial numbers assigned (`m_bHasSerialNumber` is false), call `SMX_SetSerialNumbers()` to assign them. Once assigned, serial numbers persist on the controller across power cycles and can be used to reliably identify specific pads regardless of jumper configuration.
+
 ## Panel bitmask
 
 `SMX_GetInputState` returns a `uint16_t` where each bit corresponds to a panel:

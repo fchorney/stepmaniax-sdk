@@ -177,8 +177,22 @@ public:
         info.m_bConnected = IsConnectedLocked();
         if(!info.m_bConnected) return;
         SMXDeviceInfo di = m_Connection.GetDeviceInfo();
+        info.m_bIsPlayer2 = di.m_bP2;
         memcpy(info.m_Serial, di.m_Serial, sizeof(info.m_Serial));
         info.m_iFirmwareVersion = di.m_iFirmwareVersion;
+
+        // Check if a serial number has been assigned. An unassigned serial
+        // will be all zeros or all 0xFF in the raw bytes, which shows up as
+        // "00000000000000000000000000000000" or "ffffffffffffffffffffffffffffffff".
+        info.m_bHasSerialNumber = false;
+        for(int i = 0; i < 32; i++)
+        {
+            if(info.m_Serial[i] != '0' && info.m_Serial[i] != 'f')
+            {
+                info.m_bHasSerialNumber = true;
+                break;
+            }
+        }
     }
 
     bool IsPlayer2Locked() const
