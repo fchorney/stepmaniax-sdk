@@ -1,8 +1,15 @@
 #include "SMXDeviceConnection.h"
-#include "Helpers.h"
 #include <cstring>
 #include <algorithm>
 #include <utility>
+
+// These are defined in SMX.cpp.
+namespace SMX {
+    void Log(const std::string &s);
+    std::string ssprintf(const char *fmt, ...);
+    std::string BinaryToHex(const void *pData, int iNumBytes);
+    double GetMonotonicTime();
+}
 
 using namespace std;
 using namespace SMX;
