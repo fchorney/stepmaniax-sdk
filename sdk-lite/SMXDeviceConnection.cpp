@@ -1,5 +1,4 @@
 #include "SMXDeviceConnection.h"
-#include <cstring>
 #include <algorithm>
 #include <utility>
 
@@ -19,7 +18,7 @@ using namespace SMX;
 #define PACKET_FLAG_HOST_CMD_FINISHED  0x02
 #define PACKET_FLAG_DEVICE_INFO        0x80
 
-SMXDeviceConnection::SMXDeviceConnection() {}
+SMXDeviceConnection::SMXDeviceConnection() = default;
 
 SMXDeviceConnection::~SMXDeviceConnection()
 {
@@ -89,7 +88,7 @@ void SMXDeviceConnection::Close()
 
     if(m_pCurrentCommand && m_pCurrentCommand->m_pComplete)
         m_pCurrentCommand->m_pComplete("");
-    for(auto &cmd : m_aPendingCommands)
+    for(const auto &cmd : m_aPendingCommands)
     {
         if(cmd->m_pComplete)
             cmd->m_pComplete("");
@@ -133,7 +132,7 @@ void SMXDeviceConnection::CheckReads(string &sError)
 {
     if(m_pCurrentCommand && m_pCurrentCommand->m_bSent)
     {
-        double fSecondsAgo = GetMonotonicTime() - m_pCurrentCommand->m_fSentAt;
+        const double fSecondsAgo = GetMonotonicTime() - m_pCurrentCommand->m_fSentAt;
         if(fSecondsAgo > 2.0)
         {
             Log("Command timed out. Retrying...");
@@ -151,7 +150,7 @@ void SMXDeviceConnection::CheckReads(string &sError)
     {
         // Read into rawbuf+1, leaving rawbuf[0] free for the report ID on
         // platforms where hidapi strips it.
-        int res = hid_read(m_pDevice, rawbuf + 1, 64);
+        const int res = hid_read(m_pDevice, rawbuf + 1, 64);
         if(res < 0)
         {
             sError = "Error reading from device";
@@ -195,7 +194,7 @@ void SMXDeviceConnection::CheckReads(string &sError)
         rawbuf[0] = reportId;
         HandleUsbPacket(string((char *)rawbuf, res + 1));
         */
-        HandleUsbPacket(string((char *)rawbuf + 1, res));
+        HandleUsbPacket(string(reinterpret_cast<char*>(rawbuf) + 1, res));
 #endif
     }
 }
@@ -205,12 +204,12 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
     if(buf.empty())
         return;
 
-    int iReportId = (uint8_t)buf[0];
+    const auto iReportId = static_cast<uint8_t>(buf[0]);
     switch(iReportId)
     {
     case 3:
         if(buf.size() >= 3)
-            m_iInputState = ((uint8_t)buf[2] << 8) | (uint8_t)buf[1];
+            m_iInputState = (static_cast<uint8_t>(buf[2]) << 8) | static_cast<uint8_t>(buf[1]);
         break;
 
     case 6:
@@ -218,9 +217,9 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
         if(buf.size() < 3)
             return;
 
-        int cmd = (uint8_t)buf[1];
-        int bytes = (uint8_t)buf[2];
-        if((int)buf.size() < 3 + bytes)
+        const int cmd = static_cast<uint8_t>(buf[1]);
+        const int bytes = static_cast<uint8_t>(buf[2]);
+        if(static_cast<int>(buf.size()) < 3 + bytes)
         {
             Log("Communication error: oversized packet (ignored)");
             return;
@@ -247,12 +246,12 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
 #pragma pack(pop)
 
             sPacket.resize(sizeof(data_info_packet), '\0');
-            const data_info_packet *packet = (const data_info_packet *)sPacket.data();
+            const auto *packet = reinterpret_cast<const data_info_packet*>(sPacket.data());
 
             m_DeviceInfo.m_bP2 = (packet->player == '1');
             m_DeviceInfo.m_iFirmwareVersion = packet->firmware_version;
 
-            string sHexSerial = BinaryToHex(packet->serial, 16);
+            const string sHexSerial = BinaryToHex(packet->serial, 16);
             memcpy(m_DeviceInfo.m_Serial, sHexSerial.c_str(), 33);
 
             Log(ssprintf("Received device info. Master version: %i, P%i",
@@ -271,7 +270,7 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
         if((cmd & PACKET_FLAG_START_OF_COMMAND) && !m_sCurrentReadBuffer.empty())
         {
             Log(ssprintf("Got START_OF_COMMAND with %i bytes in read buffer",
-                (int)m_sCurrentReadBuffer.size()));
+                static_cast<int>(m_sCurrentReadBuffer.size())));
             m_sCurrentReadBuffer.clear();
         }
 
@@ -292,6 +291,9 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
         }
         break;
     }
+    default:
+        // Insert some kind of log here maybe?
+        break;
     }
 }
 
@@ -303,7 +305,7 @@ void SMXDeviceConnection::CheckWrites(string &sError)
     if(m_aPendingCommands.empty())
         return;
 
-    auto pCmd = m_aPendingCommands.front();
+    const auto pCmd = m_aPendingCommands.front();
     m_aPendingCommands.pop_front();
 
     // Send all HID packets for this command sequentially.
@@ -311,8 +313,8 @@ void SMXDeviceConnection::CheckWrites(string &sError)
     const string &sData = pCmd->sData;
     for(size_t offset = 0; offset < sData.size(); offset += 64)
     {
-        size_t len = min((size_t)64, sData.size() - offset);
-        int res = hid_write(m_pDevice, (const unsigned char *)sData.data() + offset, len);
+        const size_t len = min(static_cast<size_t>(64), sData.size() - offset);
+        const int res = hid_write(m_pDevice, reinterpret_cast<const unsigned char*>(sData.data()) + offset, len);
         if(res < 0)
         {
             sError = "Error writing to device";
@@ -329,13 +331,13 @@ void SMXDeviceConnection::CheckWrites(string &sError)
 
 void SMXDeviceConnection::RequestDeviceInfo(function<void(string response)> pComplete)
 {
-    auto pCmd = make_shared<PendingCommand>();
-    pCmd->m_pComplete = pComplete;
+    const auto pCmd = make_shared<PendingCommand>();
+    pCmd->m_pComplete = std::move(pComplete);
     pCmd->m_bIsDeviceInfoCommand = true;
 
     string sPacket(64, '\0');
     sPacket[0] = 5;  // report ID
-    sPacket[1] = (char)(uint8_t)PACKET_FLAG_DEVICE_INFO;
+    sPacket[1] = static_cast<char>(PACKET_FLAG_DEVICE_INFO);
     sPacket[2] = 0;
 
     pCmd->sData = sPacket;
@@ -344,30 +346,30 @@ void SMXDeviceConnection::RequestDeviceInfo(function<void(string response)> pCom
 
 void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string response)> pComplete)
 {
-    auto pCmd = make_shared<PendingCommand>();
-    pCmd->m_pComplete = pComplete;
+    const auto pCmd = make_shared<PendingCommand>();
+    pCmd->m_pComplete = std::move(pComplete);
 
     // Build HID packets. Each carries up to 61 bytes of command payload.
     string allPackets;
     int i = 0;
     do {
-        int iPacketSize = min((int)(cmd.size() - i), 61);
-        int iFlags = 0;
+        const uint8_t iPacketSize = min(static_cast<int>(cmd.size() - i), 61);
+        uint8_t iFlags = 0;
         if(i == 0)
             iFlags |= PACKET_FLAG_START_OF_COMMAND;
-        if(i + iPacketSize == (int)cmd.size())
+        if(i + iPacketSize == static_cast<int>(cmd.size()))
             iFlags |= PACKET_FLAG_END_OF_COMMAND;
 
         string sPacket(64, '\0');
         sPacket[0] = 5;  // report ID
-        sPacket[1] = (char)(uint8_t)iFlags;
-        sPacket[2] = (char)(uint8_t)iPacketSize;
+        sPacket[1] = static_cast<char>(iFlags);
+        sPacket[2] = static_cast<char>(iPacketSize);
         if(iPacketSize > 0)
             memcpy(&sPacket[3], cmd.data() + i, iPacketSize);
 
         allPackets += sPacket;
         i += iPacketSize;
-    } while(i < (int)cmd.size());
+    } while(i < static_cast<int>(cmd.size()));
 
     pCmd->sData = allPackets;
     m_aPendingCommands.push_back(pCmd);

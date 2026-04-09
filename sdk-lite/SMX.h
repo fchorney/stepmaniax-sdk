@@ -1,7 +1,7 @@
 #ifndef SMX_H
 #define SMX_H
 
-#include <stdint.h>
+#include <cstdint>
 
 #ifdef SMX_EXPORTS
     #ifdef _WIN32
@@ -17,6 +17,8 @@
     #endif
 #endif
 
+#define SERIAL_SIZE 16
+
 struct SMXInfo;
 
 // All functions are nonblocking. Getters return the most recent state.
@@ -31,7 +33,7 @@ enum SMXUpdateCallbackReason {
 // UpdateCallback is called asynchronously from a helper thread when something
 // happens: connection, disconnection, input changes, etc.
 typedef void SMXUpdateCallback(int pad, SMXUpdateCallbackReason reason, void *pUser);
-SMX_API void SMX_Start(SMXUpdateCallback UpdateCallback, void *pUser);
+SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser);
 
 // Shut down and disconnect from all devices. Waits for callbacks to complete.
 // Must not be called from within the update callback.

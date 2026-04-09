@@ -33,6 +33,10 @@ target_include_directories(smx-lite PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${HIDAPI_
 target_link_libraries(smx-lite PUBLIC ${HIDAPI_LIBRARIES})
 target_compile_definitions(smx-lite PRIVATE SMX_EXPORTS)
 
+# If using Homebrew on macOS, you may need to specify the library and include directories
+target_include_directories(smx-lite PUBLIC /opt/homebrew/include)
+target_link_directories(smx-lite PUBLIC /opt/homebrew/lib)
+
 find_package(Threads REQUIRED)
 target_link_libraries(smx-lite PUBLIC Threads::Threads)
 

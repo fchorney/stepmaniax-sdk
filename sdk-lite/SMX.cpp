@@ -7,10 +7,9 @@
 
 #include <hidapi/hidapi.h>
 
-#include <cstdio>
 #include <cstdarg>
-#include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 #include <functional>
 #include <thread>
@@ -20,7 +19,6 @@
 #include <chrono>
 #include <random>
 #include <algorithm>
-#include <utility>
 #include <memory>
 
 using namespace std;
@@ -50,14 +48,14 @@ void Log(const string &s)
 
 void SetLogCallback(function<void(const string &log)> callback)
 {
-    g_LogCallback = callback;
+    g_LogCallback = std::move(callback);
 }
 
 string ssprintf(const char *fmt, ...)
 {
     va_list va;
     va_start(va, fmt);
-    int n = vsnprintf(nullptr, 0, fmt, va);
+    const int n = vsnprintf(nullptr, 0, fmt, va);
     va_end(va);
     if(n < 0) return string("Error formatting: ") + fmt;
 
@@ -68,9 +66,9 @@ string ssprintf(const char *fmt, ...)
     return s;
 }
 
-string BinaryToHex(const void *pData, int iNumBytes)
+string BinaryToHex(const void *pData, const int iNumBytes)
 {
-    const unsigned char *p = (const unsigned char *)pData;
+    const auto *p = static_cast<const unsigned char*>(pData);
     string s;
     for(int i = 0; i < iNumBytes; i++)
         s += ssprintf("%02x", p[i]);
@@ -79,17 +77,16 @@ string BinaryToHex(const void *pData, int iNumBytes)
 
 string BinaryToHex(const string &sString)
 {
-    return BinaryToHex(sString.data(), sString.size());
+    return BinaryToHex(sString.data(), static_cast<int>(sString.size()));
 }
 
-static void GenerateRandom(void *pOut, int iSize)
+static void GenerateSerial(uint8_t *pOut)
 {
     random_device rd;
     mt19937 gen(rd());
     uniform_int_distribution<int> dist(0, 255);
-    uint8_t *p = (uint8_t *)pOut;
-    for(int i = 0; i < iSize; i++)
-        p[i] = (uint8_t)dist(gen);
+    for(int i = 0; i < SERIAL_SIZE; i++)
+        pOut[i] = static_cast<uint8_t>(dist(gen));
 }
 
 } // namespace SMX
@@ -136,7 +133,7 @@ public:
 
     void SetLock(recursive_mutex *pLock) { m_pLock = pLock; }
 
-    void SetUpdateCallback(function<void(int, SMXUpdateCallbackReason)> cb) { m_pUpdateCallback = cb; }
+    void SetUpdateCallback(function<void(int, SMXUpdateCallbackReason)> cb) { m_pUpdateCallback = std::move(cb); }
 
     bool OpenDevice(const string &sPath, string &sError)
     {
@@ -158,25 +155,25 @@ public:
         return IsConnectedLocked();
     }
 
-    void SendCommand(const string &cmd, function<void(string)> pComplete = nullptr)
+    void SendCommand(const string &cmd, const function<void(string)>& pComplete = nullptr)
     {
         lock_guard<recursive_mutex> lock(*m_pLock);
         if(!m_Connection.IsConnected()) { if(pComplete) pComplete(""); return; }
         m_Connection.SendCommand(cmd, pComplete);
     }
 
-    void GetInfo(SMXInfo &info)
+    void GetInfo(SMXInfo &info) const
     {
         lock_guard<recursive_mutex> lock(*m_pLock);
         GetInfoLocked(info);
     }
 
-    void GetInfoLocked(SMXInfo &info)
+    void GetInfoLocked(SMXInfo &info) const
     {
         info = SMXInfo();
         info.m_bConnected = IsConnectedLocked();
         if(!info.m_bConnected) return;
-        SMXDeviceInfo di = m_Connection.GetDeviceInfo();
+        const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
         info.m_bIsPlayer2 = di.m_bP2;
         memcpy(info.m_Serial, di.m_Serial, sizeof(info.m_Serial));
         info.m_iFirmwareVersion = di.m_iFirmwareVersion;
@@ -213,7 +210,7 @@ public:
 
         CheckActive();
 
-        uint16_t oldState = m_Connection.GetInputState();
+        const uint16_t oldState = m_Connection.GetInputState();
         m_Connection.Update(sError);
         if(!sError.empty()) return;
 
@@ -234,7 +231,7 @@ private:
         if(!m_Connection.IsConnectedWithDeviceInfo() || m_Connection.GetActive())
             return;
         m_Connection.SetActive(true);
-        SMXDeviceInfo di = m_Connection.GetDeviceInfo();
+        const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
         m_Connection.SendCommand(di.m_iFirmwareVersion >= 5 ? "G" : "g\n");
     }
 
@@ -247,8 +244,8 @@ private:
             if(buf[0] != 'g' && buf[0] != 'G') continue;
 
             if(buf.size() < 2) { Log("Invalid config packet"); continue; }
-            uint8_t iSize = (uint8_t)buf[1];
-            if((int)buf.size() < iSize + 2) { Log("Invalid config packet"); continue; }
+            const auto iSize = static_cast<uint8_t>(buf[1]);
+            if(static_cast<int>(buf.size()) < iSize + 2) { Log("Invalid config packet"); continue; }
 
             if(buf[0] == 'g')
             {
@@ -257,7 +254,7 @@ private:
             }
             else
             {
-                memcpy(&m_Config, buf.data() + 2, min((int)iSize, (int)sizeof(m_Config)));
+                memcpy(&m_Config, buf.data() + 2, min(static_cast<int>(iSize), static_cast<int>(sizeof(m_Config))));
             }
 
             m_bHaveConfig = true;
@@ -265,10 +262,10 @@ private:
         }
     }
 
-    void CallUpdateCallback(SMXUpdateCallbackReason reason)
+    void CallUpdateCallback(SMXUpdateCallbackReason const reason) const
     {
         if(!m_pUpdateCallback) return;
-        SMXDeviceInfo di = m_Connection.GetDeviceInfo();
+        const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
         m_pUpdateCallback(di.m_bP2 ? 1 : 0, reason);
     }
 
@@ -285,28 +282,26 @@ private:
 class SMXManager
 {
 public:
-    SMXManager(function<void(int, SMXUpdateCallbackReason)> callback):
+    explicit SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callback):
         m_Callback(callback)
     {
-        for(int i = 0; i < 2; i++)
+        for(auto & m_Device : m_Devices)
         {
-            m_Devices[i].SetLock(&m_Lock);
-            m_Devices[i].SetUpdateCallback(callback);
+            m_Device.SetLock(&m_Lock);
+            m_Device.SetUpdateCallback(callback);
         }
         m_Thread = thread([this] { ThreadMain(); });
     }
 
-    ~SMXManager() { Shutdown(); }
-
-    void Shutdown()
+    ~SMXManager()
     {
-        if(!m_Thread.joinable()) return;
         m_bShutdown = true;
         m_Cond.notify_all();
-        m_Thread.join();
+        if(m_Thread.joinable())
+            m_Thread.join();
     }
 
-    SMXDevice *GetDevice(int pad)
+    SMXDevice *GetDevice(const int pad)
     {
         if(pad < 0 || pad > 1) return nullptr;
         return &m_Devices[pad];
@@ -315,14 +310,14 @@ public:
     void SetSerialNumbers()
     {
         lock_guard<recursive_mutex> lock(m_Lock);
-        for(int i = 0; i < 2; i++)
+        for(auto & m_Device : m_Devices)
         {
             string sData = "s";
-            uint8_t serial[16];
-            GenerateRandom(serial, sizeof(serial));
-            sData.append((char *)serial, sizeof(serial));
+            uint8_t serial[SERIAL_SIZE];
+            GenerateSerial(serial);
+            sData.append(reinterpret_cast<char*>(serial), sizeof(serial));
             sData.append(1, '\n');
-            m_Devices[i].SendCommand(sData);
+            m_Device.SendCommand(sData);
         }
     }
 
@@ -355,8 +350,8 @@ private:
     void AttemptConnections()
     {
         // Enumerate SMX devices via hidapi.
-        struct hid_device_info *devs = hid_enumerate(0x2341, 0x8037);
-        for(struct hid_device_info *cur = devs; cur; cur = cur->next)
+        hid_device_info *devs = hid_enumerate(0x2341, 0x8037);
+        for(const hid_device_info *cur = devs; cur; cur = cur->next)
         {
             if(!cur->product_string || wcscmp(cur->product_string, L"StepManiaX") != 0)
                 continue;
@@ -367,14 +362,14 @@ private:
 
             // Skip if already open.
             bool bOpen = false;
-            for(int i = 0; i < 2; i++)
-                if(m_Devices[i].GetDevicePath() == sPath) { bOpen = true; break; }
+            for(const auto & m_Device : m_Devices)
+                if(m_Device.GetDevicePath() == sPath) { bOpen = true; break; }
             if(bOpen) continue;
 
             // Find an empty slot.
             SMXDevice *pSlot = nullptr;
-            for(int i = 0; i < 2; i++)
-                if(m_Devices[i].GetDevicePath().empty()) { pSlot = &m_Devices[i]; break; }
+            for(auto & m_Device : m_Devices)
+                if(m_Device.GetDevicePath().empty()) { pSlot = &m_Device; break; }
 
             if(!pSlot) { Log("No available slots for device."); break; }
 
@@ -397,7 +392,7 @@ private:
            m_Devices[0].IsPlayer2Locked() == m_Devices[1].IsPlayer2Locked())
             return;
 
-        bool bSwap = (info[0].m_bConnected && m_Devices[0].IsPlayer2Locked()) ||
+        const bool bSwap = (info[0].m_bConnected && m_Devices[0].IsPlayer2Locked()) ||
                      (info[1].m_bConnected && !m_Devices[1].IsPlayer2Locked());
         if(bSwap)
         {
@@ -416,7 +411,7 @@ private:
 };
 
 // File-static singleton. No global variable visible outside this file.
-static shared_ptr<SMXManager> g_pSMX;
+shared_ptr<SMXManager> g_pSMX;
 
 } // anonymous namespace
 
@@ -428,7 +423,7 @@ SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser)
     if(g_pSMX) return;
     hid_init();
 
-    auto cb = [callback, pUser](int pad, SMXUpdateCallbackReason reason) {
+    auto cb = [callback, pUser](const int pad, const SMXUpdateCallbackReason reason) {
         callback(pad, reason, pUser);
     };
     g_pSMX = make_shared<SMXManager>(cb);
@@ -442,22 +437,22 @@ SMX_API void SMX_Stop()
 
 SMX_API void SMX_SetLogCallback(SMXLogCallback callback)
 {
-    SMX::SetLogCallback([callback](const string &log) {
+    SetLogCallback([callback](const string &log) {
         callback(log.c_str());
     });
 }
 
-SMX_API void SMX_GetInfo(int pad, SMXInfo *info)
+SMX_API void SMX_GetInfo(const int pad, SMXInfo *info)
 {
     if(!g_pSMX) return;
-    auto *dev = g_pSMX->GetDevice(pad);
+    const auto *dev = g_pSMX->GetDevice(pad);
     if(dev) dev->GetInfo(*info);
 }
 
-SMX_API uint16_t SMX_GetInputState(int pad)
+SMX_API uint16_t SMX_GetInputState(const int pad)
 {
     if(!g_pSMX) return 0;
-    auto *dev = g_pSMX->GetDevice(pad);
+    const auto *dev = g_pSMX->GetDevice(pad);
     return dev ? dev->GetInputState() : 0;
 }
 

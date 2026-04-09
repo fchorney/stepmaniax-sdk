@@ -39,7 +39,7 @@ public:
 
     void Update(std::string &sError);
 
-    void SetActive(bool bActive) { m_bActive = bActive; }
+    void SetActive(const bool bActive) { m_bActive = bActive; }
     bool GetActive() const { return m_bActive; }
 
     bool ReadPacket(std::string &out);

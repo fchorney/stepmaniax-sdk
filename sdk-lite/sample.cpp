@@ -1,9 +1,17 @@
-#include <cstdio>
 #include <chrono>
+#include <csignal>
 #include <thread>
 #include "SMX.h"
 
-void OnStateChanged(int pad, SMXUpdateCallbackReason reason, void *pUser)
+volatile std::sig_atomic_t g_shouldExit = 0;
+
+void signal_handler(const int signal) {
+    if(signal == SIGINT) {
+        g_shouldExit = 1;
+    }
+}
+
+void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, void *pUser)
 {
     SMXInfo info;
     SMX_GetInfo(pad, &info);
@@ -14,7 +22,7 @@ void OnStateChanged(int pad, SMXUpdateCallbackReason reason, void *pUser)
         return;
     }
 
-    uint16_t state = SMX_GetInputState(pad);
+    const uint16_t state = SMX_GetInputState(pad);
     printf("Pad %i (jumper: P%i, serial: %s%s, fw: %i): input %04x\n",
         pad,
         info.m_bIsPlayer2 ? 2 : 1,
@@ -26,6 +34,7 @@ void OnStateChanged(int pad, SMXUpdateCallbackReason reason, void *pUser)
 
 int main()
 {
+    std::signal(SIGINT, signal_handler);
     printf("SMX SDK Lite v%s\n", SMX_Version());
 
     SMX_Start(OnStateChanged, nullptr);
@@ -34,7 +43,7 @@ int main()
 
     // On first connection, check for duplicate player config or missing serials.
     bool bChecked = false;
-    while(true)
+    while(!g_shouldExit)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
 

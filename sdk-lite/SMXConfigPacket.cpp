@@ -1,6 +1,4 @@
 #include "SMXConfigPacket.h"
-#include <cstring>
-#include <cstddef>
 
 #pragma pack(push, 1)
 struct OldSMXConfig
@@ -19,27 +17,27 @@ struct OldSMXConfig
     uint16_t autoCalibrationAveragesPerUpdate = 60;
     uint8_t unused7 = 0xFF, unused8 = 0xFF;
     uint8_t panelThreshold1Low = 0xFF, panelThreshold1High = 0xFF;
-    uint8_t enabledSensors[5];
+    uint8_t enabledSensors[5]{};
     uint8_t autoLightsTimeout = 1000/128;
-    uint8_t stepColor[3*9];
-    uint8_t panelRotation;
+    uint8_t stepColor[3*9]{};
+    uint8_t panelRotation{};
     uint16_t autoCalibrationSamplesPerAverage = 500;
     uint8_t masterVersion = 0xFF;
     uint8_t configVersion = 0x03;
-    uint8_t unused9[10];
-    uint8_t panelThreshold0Low, panelThreshold0High;
-    uint8_t panelThreshold3Low, panelThreshold3High;
-    uint8_t panelThreshold5Low, panelThreshold5High;
-    uint8_t panelThreshold6Low, panelThreshold6High;
-    uint8_t panelThreshold8Low, panelThreshold8High;
+    uint8_t unused9[10]{};
+    uint8_t panelThreshold0Low{}, panelThreshold0High{};
+    uint8_t panelThreshold3Low{}, panelThreshold3High{};
+    uint8_t panelThreshold5Low{}, panelThreshold5High{};
+    uint8_t panelThreshold6Low{}, panelThreshold6High{};
+    uint8_t panelThreshold8Low{}, panelThreshold8High{};
     uint16_t debounceDelayMilliseconds = 0;
-    uint8_t padding[164];
+    uint8_t padding[164]{};
 };
 #pragma pack(pop)
 
-void ConvertToNewConfig(const std::vector<uint8_t> &oldConfigData, SMXConfig &newConfig)
+void ConvertToNewConfig(const std::vector<uint8_t> &oldConfig, SMXConfig &newConfig)
 {
-    const OldSMXConfig &old = *(const OldSMXConfig *)oldConfigData.data();
+    const OldSMXConfig &old = *reinterpret_cast<const OldSMXConfig*>(oldConfig.data());
 
     newConfig.debounceNodelayMilliseconds = old.masterDebounceMilliseconds;
 

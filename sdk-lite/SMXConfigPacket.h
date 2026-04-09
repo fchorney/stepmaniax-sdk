@@ -2,7 +2,6 @@
 #define SMXConfigPacket_h
 
 #include <vector>
-#include <cstdint>
 
 // SMXConfig is needed internally for the connection handshake (the device isn't
 // considered "connected" until its config is read). We keep the struct here but
@@ -32,15 +31,15 @@ struct SMXConfig
     uint16_t autoCalibrationAveragesPerUpdate = 60;
     uint16_t autoCalibrationSamplesPerAverage = 500;
     uint16_t autoCalibrationMaxTare = 0xFFFF;
-    uint8_t enabledSensors[5];
+    uint8_t enabledSensors[5]{};
     uint8_t autoLightsTimeout = 1000/128;
-    uint8_t stepColor[3*9];
-    uint8_t platformStripColor[3];
+    uint8_t stepColor[3*9]{};
+    uint8_t platformStripColor[3]{};
     uint16_t autoLightPanelMask = 0xFFFF;
-    uint8_t panelRotation;
-    packed_sensor_settings_t panelSettings[9];
+    uint8_t panelRotation{};
+    packed_sensor_settings_t panelSettings[9]{};
     uint8_t preDetailsDelayMilliseconds = 5;
-    uint8_t padding[49];
+    uint8_t padding[49]{};
 };
 #pragma pack(pop)
 
