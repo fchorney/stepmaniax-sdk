@@ -1,6 +1,7 @@
 #include <chrono>
 #include <csignal>
 #include <thread>
+
 #include "SMX.h"
 
 volatile std::sig_atomic_t g_shouldExit = 0;

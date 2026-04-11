@@ -1,4 +1,5 @@
 #include "SMXDeviceConnection.h"
+
 #include <algorithm>
 #include <utility>
 
@@ -20,10 +21,7 @@ using namespace SMX;
 
 SMXDeviceConnection::SMXDeviceConnection() = default;
 
-SMXDeviceConnection::~SMXDeviceConnection()
-{
-    Close();
-}
+SMXDeviceConnection::~SMXDeviceConnection() { Close(); }
 
 SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
     m_pDevice(other.m_pDevice),

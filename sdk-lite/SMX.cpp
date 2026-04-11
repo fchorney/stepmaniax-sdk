@@ -2,24 +2,24 @@
 // Contains: helpers, device search, device management, and public API.
 
 #include "SMX.h"
-#include "SMXConfigPacket.h"
-#include "SMXDeviceConnection.h"
 
-#include <hidapi/hidapi.h>
-
-#include <cstdarg>
-#include <string>
-#include <utility>
-#include <vector>
-#include <functional>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <random>
-#include <algorithm>
+#include <condition_variable>
+#include <cstdarg>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <random>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+#include <hidapi/hidapi.h>
+
+#include "SMXConfigPacket.h"
+#include "SMXDeviceConnection.h"
 
 using namespace std;
 

@@ -1,10 +1,10 @@
 #ifndef SMXDeviceConnection_h
 #define SMXDeviceConnection_h
 
-#include <string>
-#include <list>
 #include <functional>
+#include <list>
 #include <memory>
+#include <string>
 #include <hidapi/hidapi.h>
 
 namespace SMX {
