@@ -313,9 +313,11 @@ public:
         }
     }
 
-    /// Internal version of IsConnected with lock already held. Used to avoid
-    /// recursive lock acquisition.
-    /// @return True if the device is fully connected with device info and config.
+    /// Returns whether the device's physical jumper is set to Player 2 mode.
+    /// Lock must be held by the caller.
+    /// Only meaningful if the device is fully connected.
+    /// Used internally for device ordering logic.
+    /// @return True if this device's P2 jumper is set.
     bool IsPlayer2Locked() const
     {
         return IsConnectedLocked() && m_Connection.GetDeviceInfo().m_bP2;
