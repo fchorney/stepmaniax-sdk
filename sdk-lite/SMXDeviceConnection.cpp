@@ -33,6 +33,7 @@ SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
     m_bGotInfo(other.m_bGotInfo),
     m_sReadBuffers(std::move(other.m_sReadBuffers)),
     m_sCurrentReadBuffer(std::move(other.m_sCurrentReadBuffer)),
+    m_sQuickReadBuffer(std::move(other.m_sQuickReadBuffer)),
     m_iInputState(other.m_iInputState),
     m_DeviceInfo(other.m_DeviceInfo),
     m_aPendingCommands(std::move(other.m_aPendingCommands)),
@@ -54,6 +55,7 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
         m_bGotInfo = other.m_bGotInfo;
         m_sReadBuffers = std::move(other.m_sReadBuffers);
         m_sCurrentReadBuffer = std::move(other.m_sCurrentReadBuffer);
+        m_sQuickReadBuffer = std::move(other.m_sQuickReadBuffer);
         m_iInputState = other.m_iInputState;
         m_DeviceInfo = other.m_DeviceInfo;
         m_aPendingCommands = std::move(other.m_aPendingCommands);
@@ -108,6 +110,7 @@ void SMXDeviceConnection::Close()
     m_sPath.clear();
     m_sReadBuffers.clear();
     m_sCurrentReadBuffer.clear();
+    m_sQuickReadBuffer.clear();
     m_aPendingCommands.clear();
     m_pCurrentCommand = nullptr;
     m_bActive = false;
@@ -144,9 +147,6 @@ bool SMXDeviceConnection::ReadPacket(string &out)
 /// Processes all available HID data from the device.
 /// Handles reading packets, detecting command timeouts, and buffering data.
 /// Commands that don't receive responses within 2 seconds are requeued for retry.
-/// Uses a 1-byte pad before the read buffer to normalize report ID handling across platforms:
-/// - Windows: includes report ID in read data
-/// - Linux/macOS: strips report ID from read data
 void SMXDeviceConnection::CheckReads(string &sError)
 {
     // Check if current command has timed out (2 second limit).
@@ -162,16 +162,13 @@ void SMXDeviceConnection::CheckReads(string &sError)
         }
     }
 
-    // hidapi read buffer. On Windows, hidapi includes the report ID as the first
-    // byte. On Linux/macOS with hidraw, the report ID is stripped. We read into
-    // a buffer with an extra byte at the front so we can normalize this.
-    unsigned char rawbuf[65];
+    // Read all fresh data from HID and append to any buffered incomplete packets.
+    // This combines the data stream for unified packet parsing.
+    unsigned char rawbuf[64];
     bool bHasData = false;
     while(true)
     {
-        // Read into rawbuf+1, leaving rawbuf[0] free for the report ID on
-        // platforms where hidapi strips it.
-        const int res = hid_read(m_pDevice, rawbuf + 1, 64);
+        const int res = hid_read(m_pDevice, rawbuf, 64);
         if(res < 0)
         {
             sError = "Error reading from device";
@@ -182,43 +179,61 @@ void SMXDeviceConnection::CheckReads(string &sError)
 
         bHasData = true;
 
-        // On Linux/macOS hidraw, the report ID is stripped from the read.
-        // On Windows, it's included. We detect this by checking if the first
-        // byte looks like a valid report ID we expect (3 or 5 or 6).
-        // If rawbuf[1] is a known report ID and the size matches what we'd
-        // expect with the ID included, use it as-is. Otherwise, we need to
-        // figure out which report this is.
-        //
-        // Simpler approach: on Linux, hidapi strips the report ID. We know
-        // the device sends report IDs 3 (input, 2 bytes payload) and 6
-        // (serial, 63 bytes payload). Since hidapi strips the ID, we need
-        // to infer it from the data length.
-        //
-        // Report 3 (input state): 2 bytes on wire (without ID)
-        // Report 6 (serial packet): up to 63 bytes on wire (without ID)
-        //
-        // However, this heuristic is fragile. A more robust approach:
-        // use hid_read and check if the first byte is a known report ID.
-#ifdef _WIN32
-        // Windows: report ID is included in the read.
-        HandleUsbPacket(string((char *)rawbuf + 1, res));
-#else
-        // Linux/macOS: report ID is stripped. We need to prepend it.
-        // Infer report ID from size: input reports are small (2 bytes),
-        // serial packets are larger.
+        // Append new data to buffer (combining with any incomplete packets from previous calls
+        // or from QuickCheckForData). This treats all data as one continuous stream.
+        m_sQuickReadBuffer.append(string(reinterpret_cast<char*>(rawbuf), res));
+    }
 
-        /* I think all OSs give you the report number on the first item tbh. Workshop this more later
-        uint8_t reportId;
-        if(res == 2)
-            reportId = 3; // input state report
+    // Now parse complete packets from the combined buffer.
+    // This ensures incomplete packets from QuickCheckForData are properly reassembled
+    // with fresh HID data when they arrive.
+    size_t processedBytes = 0;
+    while(processedBytes < m_sQuickReadBuffer.size())
+    {
+        // Each packet starts with report ID. We need at least 1 byte.
+        if(processedBytes + 1 > m_sQuickReadBuffer.size())
+            break;
+
+        const auto iReportId = static_cast<uint8_t>(m_sQuickReadBuffer[processedBytes]);
+        size_t packetLen = 0;
+
+        // Determine packet length based on report type
+        if(iReportId == 3)
+        {
+            // Input state report: 3 bytes total (ID + 2 bytes payload)
+            packetLen = 3;
+        }
+        else if(iReportId == 6)
+        {
+            // Command/config report: variable length based on flags and payload size
+            // Format: [ID][flags][size][payload...]
+            if(processedBytes + 3 > m_sQuickReadBuffer.size())
+                break; // Not enough data for header
+
+            const int payloadSize = static_cast<uint8_t>(m_sQuickReadBuffer[processedBytes + 2]);
+            packetLen = 3 + payloadSize;
+        }
         else
-            reportId = 6; // serial/command report
+        {
+            // Unknown report type, skip it
+            processedBytes++;
+            continue;
+        }
 
-        rawbuf[0] = reportId;
-        HandleUsbPacket(string((char *)rawbuf, res + 1));
-        */
-        HandleUsbPacket(string(reinterpret_cast<char*>(rawbuf) + 1, res));
-#endif
+        // Check if we have the complete packet
+        if(processedBytes + packetLen > m_sQuickReadBuffer.size())
+            break; // Incomplete packet, wait for more data
+
+        // Extract and process the complete packet
+        string sPacket = m_sQuickReadBuffer.substr(processedBytes, packetLen);
+        HandleUsbPacket(sPacket);
+        processedBytes += packetLen;
+    }
+
+    // Remove processed data, keep any incomplete packets for next call
+    if(processedBytes > 0)
+    {
+        m_sQuickReadBuffer = m_sQuickReadBuffer.substr(processedBytes);
     }
 
     // Signal that data was read, allowing I/O thread to wake if callback is set.
@@ -440,18 +455,22 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
     m_aPendingCommands.push_back(pCmd);
 }
 
-/// Quick check for USB data - reads available packets without full processing.
+/// Quick check for USB data - reads available packets into buffer without processing.
 /// This is called frequently by the USB polling thread to detect stage status updates.
+/// Data is buffered here and will be processed by CheckReads in the main I/O thread.
+/// This avoids the issue of draining the HID buffer before CheckReads can process packets,
+/// and ensures all packet handling happens in one place with proper synchronization.
 void SMXDeviceConnection::QuickCheckForData(std::string &sError)
 {
     if(!m_pDevice)
         return;
 
-    // Similar to CheckReads but more lightweight - just reads the packets
-    unsigned char rawbuf[65];
+    // Read all available data from HID buffer and store in intermediate buffer.
+    // Packet processing happens later in CheckReads to avoid threading issues.
+    unsigned char rawbuf[64];
     while(true)
     {
-        const int res = hid_read(m_pDevice, rawbuf + 1, 64);
+        const int res = hid_read(m_pDevice, rawbuf, 64);
         if(res < 0)
         {
             sError = "Error reading from device";
@@ -460,10 +479,7 @@ void SMXDeviceConnection::QuickCheckForData(std::string &sError)
         if(res == 0)
             break;
 
-#ifdef _WIN32
-        HandleUsbPacket(std::string((char *)rawbuf + 1, res));
-#else
-        HandleUsbPacket(std::string(reinterpret_cast<char*>(rawbuf) + 1, res));
-#endif
+        // Append to buffer.
+        m_sQuickReadBuffer.append(std::string(reinterpret_cast<char*>(rawbuf), res));
     }
 }

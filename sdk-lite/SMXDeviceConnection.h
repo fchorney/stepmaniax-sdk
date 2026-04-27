@@ -150,6 +150,7 @@ private:
 
     std::list<std::string> m_sReadBuffers;                        // Completed packets ready to read
     std::string m_sCurrentReadBuffer;                             // Packet being accumulated from fragments
+    std::string m_sQuickReadBuffer;                               // Data buffered by USB polling thread (QuickCheckForData)
 
     uint16_t m_iInputState = 0;                                   // Current panel press state
     SMXDeviceInfo m_DeviceInfo;                                   // Cached device metadata

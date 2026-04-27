@@ -373,7 +373,7 @@ public:
         // This reads and buffers any available packets
         m_Connection.QuickCheckForData(sError);
 
-        // If we read data, mark that we have queued data to process
+        // If we hit an error, return
         if(!sError.empty())
         {
             return;
@@ -604,7 +604,6 @@ private:
                     string sError;
                     m_Devices[i].QuickCheckUSBData(sError);
 
-                    // If there was data available, flag it so we can signal
                     if(!sError.empty())
                     {
                         // Don't break on error, try other device
