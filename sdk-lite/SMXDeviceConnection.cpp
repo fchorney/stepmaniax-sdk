@@ -33,9 +33,11 @@ SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
     m_bGotInfo(other.m_bGotInfo),
     m_sReadBuffers(std::move(other.m_sReadBuffers)),
     m_sCurrentReadBuffer(std::move(other.m_sCurrentReadBuffer)),
-    m_sQuickReadBuffer(std::move(other.m_sQuickReadBuffer)),
-    m_iInputState(other.m_iInputState),
+    m_iInputState(other.m_iInputState.load()),
+    m_sReport6Buffer(std::move(other.m_sReport6Buffer)),
     m_DeviceInfo(other.m_DeviceInfo),
+    m_uReport3PacketsReceived(other.m_uReport3PacketsReceived.load()),
+    m_uReport6PacketsReceived(other.m_uReport6PacketsReceived.load()),
     m_aPendingCommands(std::move(other.m_aPendingCommands)),
     m_pCurrentCommand(std::move(other.m_pCurrentCommand))
 {
@@ -55,9 +57,11 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
         m_bGotInfo = other.m_bGotInfo;
         m_sReadBuffers = std::move(other.m_sReadBuffers);
         m_sCurrentReadBuffer = std::move(other.m_sCurrentReadBuffer);
-        m_sQuickReadBuffer = std::move(other.m_sQuickReadBuffer);
-        m_iInputState = other.m_iInputState;
+        m_iInputState.store(other.m_iInputState.load());
+        m_sReport6Buffer = std::move(other.m_sReport6Buffer);
         m_DeviceInfo = other.m_DeviceInfo;
+        m_uReport3PacketsReceived.store(other.m_uReport3PacketsReceived.load());
+        m_uReport6PacketsReceived.store(other.m_uReport6PacketsReceived.load());
         m_aPendingCommands = std::move(other.m_aPendingCommands);
         m_pCurrentCommand = std::move(other.m_pCurrentCommand);
         other.m_pDevice = nullptr;
@@ -110,12 +114,15 @@ void SMXDeviceConnection::Close()
     m_sPath.clear();
     m_sReadBuffers.clear();
     m_sCurrentReadBuffer.clear();
-    m_sQuickReadBuffer.clear();
+    {
+        lock_guard<mutex> lock(m_Report6BufferMutex);
+        m_sReport6Buffer.clear();
+    }
     m_aPendingCommands.clear();
     m_pCurrentCommand = nullptr;
     m_bActive = false;
     m_bGotInfo = false;
-    m_iInputState = 0;
+    m_iInputState.store(0);
 }
 
 /// Processes I/O operations. Called once per frame from the I/O thread.
@@ -144,9 +151,10 @@ bool SMXDeviceConnection::ReadPacket(string &out)
     return true;
 }
 
-/// Processes all available HID data from the device.
-/// Handles reading packets, detecting command timeouts, and buffering data.
-/// Commands that don't receive responses within 2 seconds are requeued for retry.
+/// Processes Report 6 (command/config) packets from m_sReport6Buffer.
+/// Called by the main I/O thread to handle commands and config updates.
+/// Report 3 (input state) packets are handled entirely by the USB polling thread.
+/// Handles command timeouts, fragmentation flags, and command callbacks.
 void SMXDeviceConnection::CheckReads(string &sError)
 {
     // Check if current command has timed out (2 second limit).
@@ -162,92 +170,68 @@ void SMXDeviceConnection::CheckReads(string &sError)
         }
     }
 
-    // Read all fresh data from HID and append to any buffered incomplete packets.
-    // This combines the data stream for unified packet parsing.
-    unsigned char rawbuf[64];
+    // Consume Report 6 packets from m_sReport6Buffer (populated by USB polling thread).
+    // Process fragmented packets and queue complete ones for reading.
     bool bHasData = false;
-    while(true)
     {
-        const int res = hid_read(m_pDevice, rawbuf, 64);
-        if(res < 0)
+        lock_guard<mutex> lock(m_Report6BufferMutex);
+
+        // Parse complete packets from the Report 6 buffer.
+        size_t processedBytes = 0;
+        while(processedBytes < m_sReport6Buffer.size())
         {
-            sError = "Error reading from device";
-            return;
-        }
-        if(res == 0)
-            break;
+            // Each packet starts with report ID. We need at least 1 byte.
+            if(processedBytes + 1 > m_sReport6Buffer.size())
+                break;
 
-        bHasData = true;
+            const auto iReportId = static_cast<uint8_t>(m_sReport6Buffer[processedBytes]);
 
-        // Append new data to buffer (combining with any incomplete packets from previous calls
-        // or from QuickCheckForData). This treats all data as one continuous stream.
-        m_sQuickReadBuffer.append(string(reinterpret_cast<char*>(rawbuf), res));
-    }
+            // We only expect Report 6 here; Report 3 is handled by USB polling thread.
+            if(iReportId != 6)
+            {
+                // Shouldn't happen, but skip unknown reports
+                processedBytes++;
+                continue;
+            }
 
-    // Now parse complete packets from the combined buffer.
-    // This ensures incomplete packets from QuickCheckForData are properly reassembled
-    // with fresh HID data when they arrive.
-    size_t processedBytes = 0;
-    while(processedBytes < m_sQuickReadBuffer.size())
-    {
-        // Each packet starts with report ID. We need at least 1 byte.
-        if(processedBytes + 1 > m_sQuickReadBuffer.size())
-            break;
-
-        const auto iReportId = static_cast<uint8_t>(m_sQuickReadBuffer[processedBytes]);
-        size_t packetLen = 0;
-
-        // Determine packet length based on report type
-        if(iReportId == 3)
-        {
-            // Input state report: 3 bytes total (ID + 2 bytes payload)
-            packetLen = 3;
-        }
-        else if(iReportId == 6)
-        {
-            // Command/config report: variable length based on flags and payload size
+            // Report 6: variable length based on flags and payload size
             // Format: [ID][flags][size][payload...]
-            if(processedBytes + 3 > m_sQuickReadBuffer.size())
+            if(processedBytes + 3 > m_sReport6Buffer.size())
                 break; // Not enough data for header
 
-            const int payloadSize = static_cast<uint8_t>(m_sQuickReadBuffer[processedBytes + 2]);
-            packetLen = 3 + payloadSize;
+            const int payloadSize = static_cast<uint8_t>(m_sReport6Buffer[processedBytes + 2]);
+            const size_t packetLen = 3 + payloadSize;
+
+            // Check if we have the complete packet
+            if(processedBytes + packetLen > m_sReport6Buffer.size())
+                break; // Incomplete packet, wait for more data
+
+            // Extract and process the complete packet
+            string sPacket = m_sReport6Buffer.substr(processedBytes, packetLen);
+            HandleUsbPacket(sPacket);
+            m_uReport6PacketsReceived++;
+            bHasData = true;
+            processedBytes += packetLen;
         }
-        else
+
+        // Remove processed data, keep any incomplete packets for next call
+        if(processedBytes > 0)
         {
-            // Unknown report type, skip it
-            processedBytes++;
-            continue;
+            m_sReport6Buffer = m_sReport6Buffer.substr(processedBytes);
         }
-
-        // Check if we have the complete packet
-        if(processedBytes + packetLen > m_sQuickReadBuffer.size())
-            break; // Incomplete packet, wait for more data
-
-        // Extract and process the complete packet
-        string sPacket = m_sQuickReadBuffer.substr(processedBytes, packetLen);
-        HandleUsbPacket(sPacket);
-        processedBytes += packetLen;
-    }
-
-    // Remove processed data, keep any incomplete packets for next call
-    if(processedBytes > 0)
-    {
-        m_sQuickReadBuffer = m_sQuickReadBuffer.substr(processedBytes);
     }
 
     // Signal that data was read, allowing I/O thread to wake if callback is set.
-    // This enables responsive processing of stage status updates from the device.
+    // This enables responsive processing of command responses.
     if(bHasData && m_pDataReadyCallback)
         m_pDataReadyCallback();
 }
 
 /// Processes a single USB packet received from the device.
-/// Handles two report types:
-/// - Report ID 3: Input state (pressed panels) - updates m_iInputState
-/// - Report ID 6: Command/config response - buffers and processes fragmented packets
+/// Handles Report 6 (command/config response) packets only.
+/// Report 3 (input state) packets are processed inline by QuickCheckForData().
 ///
-/// For fragmented packets (report 6), uses flags to detect start/end and handle buffering:
+/// Fragmentation handling for Report 6:
 /// - START_OF_COMMAND: clears partial data and begins new packet
 /// - END_OF_COMMAND: queues the complete packet to m_sReadBuffers
 /// - HOST_CMD_FINISHED: invokes command callback if present
@@ -257,89 +241,84 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
         return;
 
     const auto iReportId = static_cast<uint8_t>(buf[0]);
-    switch(iReportId)
+
+    // Only process Report 6 packets; Report 3 is handled by QuickCheckForData()
+    if(iReportId != 6)
+        return;
+
+    // Command/config response report
+    if(buf.size() < 3)
+        return;
+
+    const int cmd = static_cast<uint8_t>(buf[1]);      // Command/flags byte
+    const int bytes = static_cast<uint8_t>(buf[2]);    // Payload length
+    if(static_cast<int>(buf.size()) < 3 + bytes)
     {
-    case 3:
-        // Input state report (2 bytes: panel state in little-endian 16-bit value)
-        if(buf.size() >= 3)
-            m_iInputState = (static_cast<uint8_t>(buf[2]) << 8) | static_cast<uint8_t>(buf[1]);
-        break;
+        Log("Communication error: oversized packet (ignored)");
+        return;
+    }
 
-    case 6:
+    string sPacket(buf.begin() + 3, buf.begin() + 3 + bytes);
+
+    // Device info response (special flag 0x80)
+    if(cmd & PACKET_FLAG_DEVICE_INFO)
     {
-        // Command/config response report
-        if(buf.size() < 3)
+        if(!m_pCurrentCommand || !m_pCurrentCommand->m_bIsDeviceInfoCommand)
             return;
-
-        const int cmd = static_cast<uint8_t>(buf[1]);      // Command/flags byte
-        const int bytes = static_cast<uint8_t>(buf[2]);    // Payload length
-        if(static_cast<int>(buf.size()) < 3 + bytes)
-        {
-            Log("Communication error: oversized packet (ignored)");
-            return;
-        }
-
-        string sPacket(buf.begin() + 3, buf.begin() + 3 + bytes);
-
-        // Device info response (special flag 0x80)
-        if(cmd & PACKET_FLAG_DEVICE_INFO)
-        {
-            if(!m_pCurrentCommand || !m_pCurrentCommand->m_bIsDeviceInfoCommand)
-                break;
 
 #pragma pack(push, 1)
-            struct data_info_packet
-            {
-                char cmd;
-                uint8_t packet_size;
-                char player;
-                char unused2;
-                uint8_t serial[16];
-                uint16_t firmware_version;
-                char unused3;
-            };
+        struct data_info_packet
+        {
+            char cmd;
+            uint8_t packet_size;
+            char player;
+            char unused2;
+            uint8_t serial[16];
+            uint16_t firmware_version;
+            char unused3;
+        };
 #pragma pack(pop)
 
-            sPacket.resize(sizeof(data_info_packet), '\0');
-            const auto *packet = reinterpret_cast<const data_info_packet*>(sPacket.data());
+        sPacket.resize(sizeof(data_info_packet), '\0');
+        const auto *packet = reinterpret_cast<const data_info_packet*>(sPacket.data());
 
-            m_DeviceInfo.m_bP2 = (packet->player == '1');
-            m_DeviceInfo.m_iFirmwareVersion = packet->firmware_version;
+        m_DeviceInfo.m_bP2 = (packet->player == '1');
+        m_DeviceInfo.m_iFirmwareVersion = packet->firmware_version;
 
-            const string sHexSerial = BinaryToHex(packet->serial, 16);
-            memcpy(m_DeviceInfo.m_Serial, sHexSerial.c_str(), 33);
+        const string sHexSerial = BinaryToHex(packet->serial, 16);
+        memcpy(m_DeviceInfo.m_Serial, sHexSerial.c_str(), 33);
 
-            Log(ssprintf("Received device info. Master version: %i, P%i",
-                m_DeviceInfo.m_iFirmwareVersion, m_DeviceInfo.m_bP2 + 1));
-            m_bGotInfo = true;
+        Log(ssprintf("Received device info. Master version: %i, P%i",
+            m_DeviceInfo.m_iFirmwareVersion, m_DeviceInfo.m_bP2 + 1));
+        m_bGotInfo = true;
 
-            if(m_pCurrentCommand->m_pComplete)
-                m_pCurrentCommand->m_pComplete(sPacket);
-            m_pCurrentCommand = nullptr;
-            break;
-        }
+        if(m_pCurrentCommand->m_pComplete)
+            m_pCurrentCommand->m_pComplete(sPacket);
+        m_pCurrentCommand = nullptr;
+        return;
+    }
 
-        // Regular command response (only process if device is active)
-        if(!m_bActive)
-            break;
+    // Regular command response (only process if device is active)
+    if(!m_bActive)
+        return;
 
-        // START_OF_COMMAND: clear any partial data and begin buffering
-        if((cmd & PACKET_FLAG_START_OF_COMMAND) && !m_sCurrentReadBuffer.empty())
-        {
-            Log(ssprintf("Got START_OF_COMMAND with %i bytes in read buffer",
-                static_cast<int>(m_sCurrentReadBuffer.size())));
-            m_sCurrentReadBuffer.clear();
-        }
+    // START_OF_COMMAND: clear any partial data and begin buffering
+    if((cmd & PACKET_FLAG_START_OF_COMMAND) && !m_sCurrentReadBuffer.empty())
+    {
+        Log(ssprintf("Got START_OF_COMMAND with %i bytes in read buffer",
+            static_cast<int>(m_sCurrentReadBuffer.size())));
+        m_sCurrentReadBuffer.clear();
+    }
 
-        m_sCurrentReadBuffer.append(sPacket);
+    m_sCurrentReadBuffer.append(sPacket);
 
-        // HOST_CMD_FINISHED: invoke callback if this is a command response
-        if(cmd & PACKET_FLAG_HOST_CMD_FINISHED)
-        {
-            if(m_pCurrentCommand && m_pCurrentCommand->m_pComplete)
-                m_pCurrentCommand->m_pComplete(m_sCurrentReadBuffer);
-            m_pCurrentCommand = nullptr;
-        }
+    // HOST_CMD_FINISHED: invoke callback if this is a command response
+    if(cmd & PACKET_FLAG_HOST_CMD_FINISHED)
+    {
+        if(m_pCurrentCommand && m_pCurrentCommand->m_pComplete)
+            m_pCurrentCommand->m_pComplete(m_sCurrentReadBuffer);
+        m_pCurrentCommand = nullptr;
+    }
 
         // END_OF_COMMAND: queue complete packet for reading
         if(cmd & PACKET_FLAG_END_OF_COMMAND)
@@ -348,12 +327,6 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
                 m_sReadBuffers.push_back(m_sCurrentReadBuffer);
             m_sCurrentReadBuffer.clear();
         }
-        break;
-    }
-    default:
-        // Unknown report ID (silently ignored)
-        break;
-    }
 }
 
 /// Sends the next pending command to the device if no command is currently in flight.
@@ -455,18 +428,28 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
     m_aPendingCommands.push_back(pCmd);
 }
 
-/// Quick check for USB data - reads available packets into buffer without processing.
-/// This is called frequently by the USB polling thread to detect stage status updates.
-/// Data is buffered here and will be processed by CheckReads in the main I/O thread.
-/// This avoids the issue of draining the HID buffer before CheckReads can process packets,
-/// and ensures all packet handling happens in one place with proper synchronization.
+/// Quick check for USB data called by the USB polling thread every 1ms.
+///
+/// This method handles Report 3 (input state) packets completely and inline,
+/// updating m_iInputState atomically. Report 6 (command/config) packets are
+/// extracted and buffered in m_sReport6Buffer for the main I/O thread to process.
+///
+/// This separation ensures input state is checked and updated every 1ms with
+/// minimal latency, while command/config handling is deferred to the main thread.
+///
+/// Threading model:
+/// - Called by: USB polling thread (every ~1ms)
+/// - Input state updates: Atomic operations (no lock needed)
+/// - Report 6 buffering: Protected by m_Report6BufferMutex
+///
+/// @param sError [out] Error message if a read fails.
 void SMXDeviceConnection::QuickCheckForData(std::string &sError)
 {
     if(!m_pDevice)
         return;
 
-    // Read all available data from HID buffer and store in intermediate buffer.
-    // Packet processing happens later in CheckReads to avoid threading issues.
+    // Read all available data from HID buffer into a temporary local buffer.
+    std::string localReadBuffer;
     unsigned char rawbuf[64];
     while(true)
     {
@@ -479,7 +462,94 @@ void SMXDeviceConnection::QuickCheckForData(std::string &sError)
         if(res == 0)
             break;
 
-        // Append to buffer.
-        m_sQuickReadBuffer.append(std::string(reinterpret_cast<char*>(rawbuf), res));
+        // Append fresh HID data to local buffer.
+        localReadBuffer.append(std::string(reinterpret_cast<char*>(rawbuf), res));
+    }
+
+    if(localReadBuffer.empty())
+        return;
+
+    // Now parse the local buffer, separating Report 3 (input state) from Report 6 (commands).
+    size_t processedBytes = 0;
+    std::string report6Packets; // Accumulate Report 6 packets to add to buffer in one operation
+    bool bInputStateChanged = false;   // Track if input state changed
+
+    while(processedBytes < localReadBuffer.size())
+    {
+        // Each packet starts with report ID. We need at least 1 byte.
+        if(processedBytes + 1 > localReadBuffer.size())
+            break;
+
+        const auto iReportId = static_cast<uint8_t>(localReadBuffer[processedBytes]);
+        size_t packetLen = 0;
+
+        // Determine packet length based on report type
+        if(iReportId == 3)
+        {
+            // Input state report: 3 bytes total (ID + 2 bytes payload)
+            // Parse and update m_iInputState atomically (no function call overhead)
+            if(processedBytes + 3 > localReadBuffer.size())
+                break; // Incomplete packet, leave for next cycle
+
+            packetLen = 3;
+            // Update input state directly: little-endian 16-bit value
+            const uint16_t newState = (static_cast<uint8_t>(localReadBuffer[processedBytes + 2]) << 8) |
+                                     static_cast<uint8_t>(localReadBuffer[processedBytes + 1]);
+            if(m_iInputState.load() != newState)
+            {
+                bInputStateChanged = true;
+            }
+            m_iInputState.store(newState);
+            m_uReport3PacketsReceived++;
+        }
+        else if(iReportId == 6)
+        {
+            // Command/config report: variable length based on flags and payload size
+            // Format: [ID][flags][size][payload...]
+            if(processedBytes + 3 > localReadBuffer.size())
+                break; // Not enough data for header (keep incomplete for next cycle)
+
+            const int payloadSize = static_cast<uint8_t>(localReadBuffer[processedBytes + 2]);
+            packetLen = 3 + payloadSize;
+
+            // Check if we have the complete packet
+            if(processedBytes + packetLen > localReadBuffer.size())
+                break; // Incomplete packet, leave for next cycle
+
+            // Extract this Report 6 packet and queue it for main thread processing
+            string sPacket = localReadBuffer.substr(processedBytes, packetLen);
+            report6Packets.append(sPacket);
+        }
+        else
+        {
+            // Unknown report type, skip it
+            processedBytes++;
+            continue;
+        }
+
+        processedBytes += packetLen;
+    }
+
+    // If we parsed any Report 6 packets, add them to the buffer for main thread processing.
+    // Use the mutex to ensure thread-safe updates to m_sReport6Buffer.
+    if(!report6Packets.empty())
+    {
+        lock_guard<mutex> lock(m_Report6BufferMutex);
+        m_sReport6Buffer.append(report6Packets);
+    }
+
+    // If input state changed, fire the input state changed callback.
+    // This allows immediate notification of input changes from the USB polling thread.
+    if(bInputStateChanged && m_pInputStateChangedCallback)
+    {
+        m_pInputStateChangedCallback();
+    }
+
+    // If we processed any Report 3 (input state) packets, signal the data-ready callback.
+    // This allows the main thread to wake and handle the input state change immediately,
+    // rather than waiting for the next 50ms poll cycle.
+    if(bInputStateChanged && m_pDataReadyCallback)
+    {
+        m_pDataReadyCallback();
     }
 }

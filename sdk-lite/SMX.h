@@ -27,11 +27,20 @@ struct SMXInfo;
 /// Reason codes for device state change callbacks.
 /// When a device is connected, disconnected, or its input state changes,
 /// this reason is passed to the update callback to indicate what happened.
-enum SMXUpdateCallbackReason {
-    /// Generic state change: connection, disconnection, inputs changed, config updated, etc.
+/// Multiple reasons can be combined using bitwise OR to handle multiple state changes.
+enum SMXUpdateCallbackReason : uint32_t {
+    /// Generic state change: connection, disconnection, config updated, test data updated, etc.
     /// Applications can call SMX_GetInfo() and SMX_GetInputState() to query the updated state.
-    SMXUpdateCallback_Updated,
+    SMXUpdateCallback_Updated = 1 << 0,
+
+    /// Input state (pressed panels) has changed. This is fired separately from SMXUpdateCallback_Updated
+    /// to allow applications to distinguish input changes from other state changes.
+    /// When this is fired, SMX_GetInputState() will return the new state.
+    SMXUpdateCallback_InputState = 1 << 1,
 };
+
+// Helper macro for checking if a reason includes a specific flag
+#define SMX_REASON_IS(reason, flag) (((reason) & (flag)) != 0)
 
 /// Callback function type for device state changes.
 /// Called asynchronously from the I/O thread when a device is connected, disconnected,
@@ -42,7 +51,8 @@ enum SMXUpdateCallbackReason {
 /// queued for processing on the main application thread.
 ///
 /// @param pad Device index (0 for Player 1, 1 for Player 2).
-/// @param reason Reason for the callback (currently always SMXUpdateCallback_Updated).
+/// @param reason Reason for the callback (SMXUpdateCallback_Updated, SMXUpdateCallback_InputState, or combination).
+///               Use SMX_REASON_IS(reason, SMXUpdateCallback_InputState) to check for input changes.
 /// @param pUser Application context pointer passed to SMX_Start().
 typedef void SMXUpdateCallback(int pad, SMXUpdateCallbackReason reason, void *pUser);
 

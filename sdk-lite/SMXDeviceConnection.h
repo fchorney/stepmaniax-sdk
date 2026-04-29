@@ -1,9 +1,11 @@
 #ifndef SMXDeviceConnection_h
 #define SMXDeviceConnection_h
 
+#include <atomic>
 #include <functional>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <hidapi/hidapi.h>
 
@@ -35,6 +37,60 @@ struct SMXDeviceInfo
 ///
 /// The class is non-copyable but movable to support device reordering in the manager.
 /// All operations are nonblocking; commands are queued and processed in the background.
+///
+/// ============================================================================
+/// THREADING MODEL: Split Packet Handling for Low-Latency Input State
+/// ============================================================================
+///
+/// This class is accessed by TWO independent threads simultaneously:
+///
+/// 1. USB Polling Thread (every ~1ms, non-blocking):
+///    - Calls QuickCheckForData() to read raw HID packets
+///    - Parses Report 3 (input state) packets completely and inline
+///    - Updates m_iInputState atomically (no lock needed)
+///    - Extracts Report 6 (command/config) packets and appends to m_sReport6Buffer
+///    - File reporting: see USBPollingThreadMain() in SMX.cpp
+///
+/// 2. Main I/O Thread (every ~50ms, holds m_pLock):
+///    - Calls CheckReads() to process Report 6 packets from m_sReport6Buffer
+///    - Handles fragmentation (START/END flags), command callbacks, timeouts
+///    - Never touches Report 3 or m_iInputState
+///    - File reporting: see ThreadMain() in SMX.cpp
+///
+/// MEMBER VARIABLE THREADING GUARANTEES:
+///
+///   Thread-Safe Atomics (lock-free):
+///   - m_iInputState: std::atomic<uint16_t>, updated by USB thread, read by main thread
+///   - m_uReport3PacketsReceived, m_uReport6PacketsReceived: packet counters for validation
+///
+///   Protected by m_Report6BufferMutex (USB thread writes, main thread reads):
+///   - m_sReport6Buffer: Report 6 packets accumulated by USB thread, consumed by CheckReads()
+///
+///   Protected by External Lock (m_pLock held when called):
+///   - m_sReadBuffers: completed packets queued for application
+///   - m_sCurrentReadBuffer: fragment accumulation for Report 6
+///   - m_aPendingCommands, m_pCurrentCommand: command queue state
+///   - m_bActive, m_bGotInfo: connection state
+///
+///   Main Thread Only (no synchronization needed):
+///   - m_pDevice, m_sPath, m_DeviceInfo: immutable after Open()
+///   - m_pDataReadyCallback: only modified during setup
+///
+/// PROTOCOL DETAILS:
+///
+///   Report 3 (Input State): 3 bytes [ID=3][low byte][high byte]
+///   - Parsed inline in QuickCheckForData(), never buffered
+///   - Updates m_iInputState atomically with full 16-bit value
+///   - Bit layout: 0-8 = panels, 9-15 = unused
+///
+///   Report 6 (Commands/Config): [ID=6][flags][size][payload...]
+///   - Variable length: 3-byte header + 0-61 bytes payload
+///   - Fragmentation flags (cf. PACKET_FLAG_*):
+///     • 0x04 (START_OF_COMMAND): clears buffered fragment
+///     • 0x01 (END_OF_COMMAND): queues complete packet to m_sReadBuffers
+///     • 0x02 (HOST_CMD_FINISHED): invokes command callback
+///   - Buffered in m_sReport6Buffer by USB thread, processed by main thread
+///
 class SMXDeviceConnection
 {
 public:
@@ -99,15 +155,20 @@ public:
     /// @param pComplete Optional callback invoked when the device responds (or on error).
     void SendCommand(const std::string &cmd, std::function<void(std::string response)> pComplete = nullptr);
 
-    /// Retrieves the current input state (pressed panels) bitmask.
-    /// Each of the 16 bits represents the state of a panel.
-    uint16_t GetInputState() const { return m_iInputState; }
+     /// Retrieves the current input state (pressed panels) bitmask.
+     /// Each of the 16 bits represents the state of a panel.
+     uint16_t GetInputState() const { return m_iInputState.load(); }
 
-    /// Sets a callback to be invoked when data is successfully read from the device.
-    /// This is used to signal the I/O thread that stage status or other data is ready
-    /// to be processed, enabling event-based waking instead of polling.
-    /// @param cb Callback function with no parameters. Called when device sends data.
-    void SetDataReadyCallback(std::function<void()> cb) { m_pDataReadyCallback = std::move(cb); }
+     /// Sets a callback to be invoked when data is successfully read from the device.
+     /// This is used to signal the I/O thread that stage status or other data is ready
+     /// to be processed, enabling event-based waking instead of polling.
+     /// @param cb Callback function with no parameters. Called when device sends data.
+     void SetDataReadyCallback(std::function<void()> cb) { m_pDataReadyCallback = std::move(cb); }
+
+     /// Sets a callback to be invoked when input state (Report 3) changes from the USB polling thread.
+     /// This allows for immediate notification of input state changes without waiting for the main I/O thread.
+     /// @param cb Callback function with no parameters. Called immediately when input state changes.
+     void SetInputStateChangedCallback(std::function<void()> cb) { m_pInputStateChangedCallback = std::move(cb); }
 
     /// Quick check for USB data, called by the USB polling thread.
     /// Performs a fast non-blocking read of available HID data.
@@ -115,9 +176,19 @@ public:
     /// @param sError [out] Error message if a read fails.
     void QuickCheckForData(std::string &sError);
 
-    /// Checks if any packets are pending in the read buffer.
-    /// @return True if there are packets ready to be processed.
-    bool HasPendingPackets() const { return !m_sReadBuffers.empty(); }
+     /// Checks if any packets are pending in the read buffer.
+     /// @return True if there are packets ready to be processed.
+     bool HasPendingPackets() const { return !m_sReadBuffers.empty(); }
+
+     /// Returns the count of Report 3 (input state) packets successfully parsed.
+     /// Used for testing and validation to detect packet loss.
+     /// @return Number of Report 3 packets processed.
+     uint32_t GetReport3PacketCount() const { return m_uReport3PacketsReceived.load(); }
+
+     /// Returns the count of Report 6 (command/config) packets successfully parsed.
+     /// Used for testing and validation to detect packet loss.
+     /// @return Number of Report 6 packets processed.
+     uint32_t GetReport6PacketCount() const { return m_uReport6PacketsReceived.load(); }
 
 private:
     /// Sends a device info request packet to the device.
@@ -143,18 +214,35 @@ private:
     /// @param buf Packet data including report ID as first byte.
     void HandleUsbPacket(const std::string &buf);
 
-    hid_device *m_pDevice = nullptr;                              // HID device handle
-    std::string m_sPath;                                          // HID device path
-    bool m_bActive = false;                                       // Whether device is sending input updates
-    bool m_bGotInfo = false;                                      // Whether device info has been retrieved
+     hid_device *m_pDevice = nullptr;                              // HID device handle
+     std::string m_sPath;                                          // HID device path
+     bool m_bActive = false;                                       // Whether device is sending input updates
+     bool m_bGotInfo = false;                                      // Whether device info has been retrieved
 
-    std::list<std::string> m_sReadBuffers;                        // Completed packets ready to read
-    std::string m_sCurrentReadBuffer;                             // Packet being accumulated from fragments
-    std::string m_sQuickReadBuffer;                               // Data buffered by USB polling thread (QuickCheckForData)
+     std::list<std::string> m_sReadBuffers;                        // Completed packets ready to read
+     std::string m_sCurrentReadBuffer;                             // Packet being accumulated from fragments
 
-    uint16_t m_iInputState = 0;                                   // Current panel press state
-    SMXDeviceInfo m_DeviceInfo;                                   // Cached device metadata
-    std::function<void()> m_pDataReadyCallback;                   // Callback when data is read from device
+     /// Input state is updated by the USB polling thread (Report 3 packets) via atomic operations.
+     /// Main thread reads via GetInputState(). Uses atomic<uint16_t> for lock-free updates.
+     /// Bit layout: 0-8 = panels, 9-15 = unused.
+     std::atomic<uint16_t> m_iInputState{0};
+
+     /// Data buffered by USB polling thread (both Report 3 and Report 6).
+     /// Report 3 packets are parsed inline within QuickCheckForData() and never buffered.
+     /// Report 6 packets are extracted and appended to this buffer for main thread processing.
+     /// Protected by m_Report6BufferMutex to prevent data race during concurrent access.
+     std::string m_sReport6Buffer;
+     std::mutex m_Report6BufferMutex;
+
+     SMXDeviceInfo m_DeviceInfo;                                   // Cached device metadata
+     std::function<void()> m_pDataReadyCallback;                   // Callback when data is read from device
+     std::function<void()> m_pInputStateChangedCallback;           // Callback when input state changes from USB thread
+
+     /// Packet counters for validation during testing.
+     /// These are incremented atomically by QuickCheckForData() (Report 3)
+     /// and CheckReads() (Report 6) to enable packet loss detection.
+     std::atomic<uint32_t> m_uReport3PacketsReceived{0};           // Count of Report 3 packets parsed
+     std::atomic<uint32_t> m_uReport6PacketsReceived{0};           // Count of Report 6 packets parsed
 
     /// Represents a command pending transmission or awaiting response.
     /// Commands may be fragmented into multiple 64-byte HID packets.

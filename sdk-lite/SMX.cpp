@@ -226,6 +226,13 @@ public:
             }
         };
         m_Connection.SetDataReadyCallback(dataReadySignal);
+
+        // Create a lambda that fires input state callback immediately
+        auto inputStateSignal = [this]()
+        {
+            CallUpdateCallback(SMXUpdateCallback_InputState);
+        };
+        m_Connection.SetInputStateChangedCallback(inputStateSignal);
     }
 
     /// Closes the connection to the physical device.
@@ -345,23 +352,20 @@ public:
 
         CheckActive();
 
-        const uint16_t oldState = m_Connection.GetInputState();
         m_Connection.Update(sError);
         if(!sError.empty())
         {
             return;
         }
 
-        if(oldState != m_Connection.GetInputState())
-        {
-            CallUpdateCallback(SMXUpdateCallback_Updated);
-        }
 
         HandlePackets();
     }
 
     /// Quick USB data check called by the USB polling thread.
-    /// This is a lightweight check to see if data is available on the device.
+    /// This triggers QuickCheckForData on the connection to parse Report 3 (input state) packets.
+    /// Report 3 packets are parsed and m_iInputState is updated atomically every 1ms.
+    /// Report 6 packets are buffered for the main I/O thread to process.
     /// The lock is already held by the caller (USB polling thread).
     /// @param sError [out] Error message if a read fails.
     void QuickCheckUSBData(string &sError)
@@ -371,34 +375,17 @@ public:
             return;
         }
 
-        // Perform a quick check for USB data availability
-        // This reads and buffers any available packets
+        // Perform a quick check for USB data availability.
+        // This reads HID packets, parses Report 3 (input state) inline and updates m_iInputState atomically,
+        // and buffers Report 6 (command) packets for the main thread to process.
         m_Connection.QuickCheckForData(sError);
-
-        // If we hit an error, return
-        if(!sError.empty())
-        {
-            return;
-        }
-
-        // Check if any packets were buffered
-        if(m_Connection.HasPendingPackets())
-        {
-            m_bHasQueuedData = true;
-        }
     }
 
-    /// Check if this device has queued data ready for processing.
-    /// @return True if data was read and is waiting to be processed.
-    bool HasQueuedData() const
+    /// Check if this device has pending Report 6 packets ready for processing by main thread.
+    /// @return True if Report 6 packets are buffered and waiting for main thread processing.
+    bool HasPendingReport6Packets() const
     {
-        return m_bHasQueuedData;
-    }
-
-    /// Clear the queued data flag after processing.
-    void ClearQueuedDataFlag()
-    {
-        m_bHasQueuedData = false;
+        return m_Connection.HasPendingPackets();
     }
 
 private:
@@ -486,7 +473,6 @@ private:
     SMXDeviceConnection m_Connection;
     SMXConfig m_Config;
     bool m_bHaveConfig = false;
-    bool m_bHasQueuedData = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -581,19 +567,21 @@ public:
 private:
     /// Main loop for the USB polling thread. Runs continuously, checking both devices
     /// for available USB data and signaling the main I/O thread when data is found.
-    /// This thread runs frequently (every 1ms) to provide responsive stage status updates,
+    /// This thread runs frequently (every 1ms) to provide responsive input state updates,
     /// while the main I/O thread can run less frequently without impacting responsiveness.
     ///
     /// The USB polling thread:
     /// - Continuously reads from both HID devices (non-blocking)
-    /// - Signals the main thread immediately if data is found
+    /// - Parses Report 3 (input state) packets inline and updates m_iInputState atomically
+    /// - Buffers Report 6 (command/config) packets for main thread processing
+    /// - Signals the main thread if Report 6 packets are found
     /// - Never blocks, maintaining consistent latency
     /// - Sleeps only 1ms between checks
     void USBPollingThreadMain()
     {
         while(!m_bShutdown)
         {
-            bool bHasData = false;
+            bool bHasReport6Data = false;
 
             {
                 lock_guard<recursive_mutex> lock(m_Lock);
@@ -601,7 +589,7 @@ private:
                 // Check both devices for available USB data
                 for(int i = 0; i < 2; i++)
                 {
-                    // Call CheckReads on the connection to read any available data
+                    // Call QuickCheckUSBData on the device to read any available data
                     // This is non-blocking and returns immediately
                     string sError;
                     m_Devices[i].QuickCheckUSBData(sError);
@@ -612,21 +600,22 @@ private:
                         Log(ssprintf("USB polling error on device %i: %s", i, sError.c_str()));
                     }
 
-                    // Check if device has any queued data (set by QuickCheckUSBData)
-                    if(m_Devices[i].HasQueuedData())
+                    // Check if device has any Report 6 (command) packets waiting for main thread
+                    // Input state (Report 3) is already updated atomically by QuickCheckForData
+                    if(m_Devices[i].HasPendingReport6Packets())
                     {
-                        bHasData = true;
+                        bHasReport6Data = true;
                     }
                 }
             }
 
-            // Signal the main thread if we found any data
-            if(bHasData)
+            // Signal the main thread if we found any Report 6 data to process
+            if(bHasReport6Data)
             {
                 m_Cond.notify_all();
             }
 
-            // Sleep 1ms before next cycle (provides ~1ms latency for stage updates)
+            // Sleep 1ms before next cycle (provides ~1ms latency for input state updates)
             // Can be tuned lower for even lower latency at cost of more CPU
             this_thread::sleep_for(chrono::milliseconds(1));
         }
