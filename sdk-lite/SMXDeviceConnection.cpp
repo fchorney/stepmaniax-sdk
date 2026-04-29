@@ -1,6 +1,7 @@
 #include "SMXDeviceConnection.h"
 
 #include <algorithm>
+#include <cstring>
 #include <utility>
 
 // These are defined in SMX.cpp.

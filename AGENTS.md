@@ -217,4 +217,4 @@ The config tool uses these extensively in diagnostics UI.
 
 8. **For cross-platform testing:** Prioritize Linux testing (most common embedded target), then macOS (for development), then Windows (full features already supported by main SDK).
 
-
+9. **Report 3 Input State data should be the absolute top priority.** The main point of the SDK Lite is to absolutely prioritize the input state data path.

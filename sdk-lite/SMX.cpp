@@ -13,6 +13,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -335,7 +336,7 @@ public:
     /// @return The input state bitmask.
     uint16_t GetInputState() const
     {
-        lock_guard<recursive_mutex> lock(*m_pLock);
+        // No lock needed: m_iInputState is std::atomic<uint16_t>.
         return m_Connection.GetInputState();
     }
 
@@ -666,6 +667,10 @@ private:
     /// in an available slot. Called each I/O thread iteration.
     void AttemptConnections()
     {
+        // Skip enumeration if both device slots are already occupied.
+        if(!m_Devices[0].GetDevicePath().empty() && !m_Devices[1].GetDevicePath().empty())
+            return;
+
         // Enumerate SMX devices via hidapi.
         hid_device_info *devs = hid_enumerate(0x2341, 0x8037);
         for(const hid_device_info *cur = devs; cur; cur = cur->next)

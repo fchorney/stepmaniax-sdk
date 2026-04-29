@@ -1,6 +1,7 @@
 #ifndef SMXConfigPacket_h
 #define SMXConfigPacket_h
 
+#include <cstdint>
 #include <vector>
 
 // SMXConfig is needed internally for the connection handshake (the device isn't

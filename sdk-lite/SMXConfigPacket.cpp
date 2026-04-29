@@ -1,4 +1,5 @@
 #include "SMXConfigPacket.h"
+#include <cstring>
 
 /// Old configuration format used in firmware versions before v5.
 /// This struct defines how config data was laid out in earlier firmware versions.
