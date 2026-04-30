@@ -26,19 +26,17 @@ uint16_t g_lastInputState[2] = {0, 0};
 
 void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, void *pUser)
 {
-    SMXInfo info;
-    SMX_GetInfo(pad, &info);
-
-    if(!info.m_bConnected)
+    if(SMX_REASON_IS(reason, SMXUpdateCallback_Disconnected))
     {
         printf("Pad %i: disconnected\n", pad);
         g_lastInputState[pad] = 0;
         return;
     }
 
-    // Only log on connection, not on every input change (polling handles input changes)
-    if(reason == SMXUpdateCallback_Updated)
+    if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
     {
+        SMXInfo info;
+        SMX_GetInfo(pad, &info);
         printf("Pad %i connected (jumper: P%i, serial: %s, fw: %i)\n",
             pad,
             info.m_bIsPlayer2 ? 2 : 1,

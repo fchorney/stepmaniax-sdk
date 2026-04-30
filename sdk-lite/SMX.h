@@ -29,14 +29,21 @@ struct SMXInfo;
 /// this reason is passed to the update callback to indicate what happened.
 /// Multiple reasons can be combined using bitwise OR to handle multiple state changes.
 enum SMXUpdateCallbackReason : uint32_t {
-    /// Generic state change: connection, disconnection, config updated, test data updated, etc.
-    /// Applications can call SMX_GetInfo() and SMX_GetInputState() to query the updated state.
+    /// Always set on every callback firing. Applications can use this as a catch-all.
     SMXUpdateCallback_Updated = 1 << 0,
 
-    /// Input state (pressed panels) has changed. This is fired separately from SMXUpdateCallback_Updated
-    /// to allow applications to distinguish input changes from other state changes.
+    /// Input state (pressed panels) has changed.
     /// When this is fired, SMX_GetInputState() will return the new state.
     SMXUpdateCallback_InputState = 1 << 1,
+
+    /// Device has become fully connected (device info and config received).
+    SMXUpdateCallback_Connected = 1 << 2,
+
+    /// Device has been disconnected.
+    SMXUpdateCallback_Disconnected = 1 << 3,
+
+    /// Device configuration has been received or updated.
+    SMXUpdateCallback_ConfigUpdated = 1 << 4,
 };
 
 // Helper macro for checking if a reason includes a specific flag

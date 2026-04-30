@@ -104,9 +104,6 @@ string BinaryToHex(const void *pData, const int iNumBytes)
     return s;
 }
 
-/// Overload of BinaryToHex for std::string input.
-/// @param sString The binary string to convert.
-/// @return Hexadecimal string representation.
 string BinaryToHex(const string &sString)
 {
     return BinaryToHex(sString.data(), static_cast<int>(sString.size()));
@@ -186,57 +183,38 @@ public:
     /// @param cb Callback function with signature (int pad, SMXUpdateCallbackReason reason).
     void SetUpdateCallback(function<void(int, SMXUpdateCallbackReason)> cb) { m_pUpdateCallback = std::move(cb); }
 
-    /// Sets a callback to signal activity to the manager's event system.
-    /// Called when I/O operations complete to wake the I/O thread, including when
-    /// device data is ready to read.
-    /// Provides access to the underlying device connection for specialized handling.
-    /// Used by the manager to enable data-ready signaling.
-    /// @return Pointer to the SMXDeviceConnection instance.
     SMXDeviceConnection *GetConnection() { return &m_Connection; }
 
-    /// Opens a connection to the physical device at the given HID path.
-    /// Initiates device communication and configuration retrieval.
-    /// @param sPath The HID device path (obtained from HID enumeration).
-    /// @param sError [out] Error message if the open fails.
-    /// @return True if the device was successfully opened, false otherwise.
-    bool OpenDevice(const string &sPath, string &sError)
-    {
-        return m_Connection.Open(sPath, sError);
-    }
-
-    /// Sets the input state changed callback on the connection, enabling immediate
-    /// notification when device input state changes.
-    void SetConnectionCallbacks()
-    {
-        // Create a lambda that fires input state callback immediately
-        auto inputStateSignal = [this]()
-        {
-            CallUpdateCallback(SMXUpdateCallback_InputState);
-        };
-        m_Connection.SetInputStateChangedCallback(inputStateSignal);
-    }
-
-    /// Closes the connection to the physical device.
-    /// Clears configuration state and invokes the update callback.
-    void CloseDevice()
-    {
-        m_Connection.Close();
-        m_bHaveConfig = false;
-        CallUpdateCallback(SMXUpdateCallback_Updated);
-    }
-
     /// Returns the HID path of this device.
-    /// @return The device path string, or empty string if not connected.
     string GetDevicePath() const { return m_Connection.GetPath(); }
 
-    /// Thread-safe check whether this device is fully connected and operational.
-    /// A device is considered connected when it has a valid HID connection,
-    /// device info has been retrieved, and configuration is available.
-    /// @return True if the device is fully connected.
     bool IsConnected() const
     {
         lock_guard<recursive_mutex> lock(*m_pLock);
         return IsConnectedLocked();
+    }
+
+    bool OpenDevice(const string &sPath, string &sError) { return m_Connection.Open(sPath, sError); }
+
+    void SetConnectionCallbacks()
+    {
+        m_Connection.SetInputStateChangedCallback([this]() {
+            CallUpdateCallback(static_cast<SMXUpdateCallbackReason>(SMXUpdateCallback_Updated | SMXUpdateCallback_InputState));
+        });
+    }
+
+    void CloseDevice()
+    {
+        m_Connection.Close();
+        m_bHaveConfig = false;
+        CallUpdateCallback(static_cast<SMXUpdateCallbackReason>(SMXUpdateCallback_Updated | SMXUpdateCallback_Disconnected));
+    }
+
+    bool QuickCheckUSBData(string &sError)
+    {
+        if(!m_Connection.IsConnected())
+            return false;
+        return m_Connection.QuickCheckForData(sError);
     }
 
     /// Queues a command to be sent to this device asynchronously.
@@ -338,20 +316,6 @@ public:
         HandlePackets();
     }
 
-    /// Quick USB data check called by the USB polling thread.
-    /// This triggers QuickCheckForData on the connection to parse Report 3 (input state) packets.
-    /// Report 3 packets are parsed and m_iInputState is updated atomically every 1ms.
-    /// Report 6 packets are buffered for the main I/O thread to process.
-    /// The lock is already held by the caller (USB polling thread).
-    /// @param sError [out] Error message if a read fails.
-    /// @return True if Report 6 data was buffered for the main thread.
-    bool QuickCheckUSBData(string &sError)
-    {
-        if(!m_Connection.IsConnected())
-            return false;
-
-        return m_Connection.QuickCheckForData(sError);
-    }
 private:
     /// Checks if the device is fully connected (has valid connection, device info, and config).
     /// @return True if all required state has been initialized.
@@ -414,8 +378,12 @@ private:
                 memcpy(&m_Config, buf.data() + 2, min(static_cast<int>(iSize), static_cast<int>(sizeof(m_Config))));
             }
 
+            const bool bFirstConfig = !m_bHaveConfig;
             m_bHaveConfig = true;
-            CallUpdateCallback(SMXUpdateCallback_Updated);
+            SMXUpdateCallbackReason reason = static_cast<SMXUpdateCallbackReason>(
+                SMXUpdateCallback_Updated | SMXUpdateCallback_ConfigUpdated |
+                (bFirstConfig ? SMXUpdateCallback_Connected : 0));
+            CallUpdateCallback(reason);
         }
     }
 
