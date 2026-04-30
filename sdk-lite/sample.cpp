@@ -19,10 +19,10 @@ void CustomLogCallback(const char *log)
     std::cerr << "[SMX] " << log << std::endl;
 }
 
-void signal_handler(const int signal) {
-    if(signal == SIGINT) {
+void signal_handler(const int signal)
+{
+    if(signal == SIGINT)
         g_shouldExit = 1;
-    }
 }
 
 void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, void *pUser)

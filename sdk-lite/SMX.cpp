@@ -227,9 +227,7 @@ public:
         if(!m_Connection.IsConnected())
         {
             if(pComplete)
-            {
                 pComplete("");
-            }
             return;
         }
         m_Connection.SendCommand(cmd, pComplete);
@@ -252,9 +250,8 @@ public:
         info = SMXInfo();
         info.m_bConnected = IsConnectedLocked();
         if(!info.m_bConnected)
-        {
             return;
-        }
+
         const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
         info.m_bIsPlayer2 = di.m_bP2;
         memcpy(info.m_Serial, di.m_Serial, sizeof(info.m_Serial));
@@ -300,18 +297,13 @@ public:
     void Update(string &sError)
     {
         if(!m_Connection.IsConnected())
-        {
             return;
-        }
 
         CheckActive();
 
         m_Connection.Update(sError);
         if(!sError.empty())
-        {
             return;
-        }
-
 
         HandlePackets();
     }
@@ -329,9 +321,8 @@ private:
     void CheckActive()
     {
         if(!m_Connection.IsConnectedWithDeviceInfo() || m_Connection.GetActive())
-        {
             return;
-        }
+
         m_Connection.SetActive(true);
         const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
         m_Connection.SendCommand(di.m_iFirmwareVersion >= 5 ? "G" : "g\n");
@@ -346,15 +337,11 @@ private:
         while(m_Connection.ReadPacket(buf))
         {
             if(buf.empty())
-            {
                 continue;
-            }
 
             // We currently only handle g/G packets.
             if(buf[0] != 'g' && buf[0] != 'G')
-            {
                 continue;
-            }
 
             if(buf.size() < 2)
             {
@@ -392,9 +379,7 @@ private:
     void CallUpdateCallback(SMXUpdateCallbackReason const reason) const
     {
         if(!m_pUpdateCallback)
-        {
             return;
-        }
         const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
         m_pUpdateCallback(di.m_bP2 ? 1 : 0, reason);
     }
@@ -456,9 +441,7 @@ public:
     SMXDevice *GetDevice(const int pad)
     {
         if(pad < 0 || pad > 1)
-        {
             return nullptr;
-        }
         return &m_Devices[pad];
     }
 

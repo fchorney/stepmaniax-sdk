@@ -154,14 +154,12 @@ public:
     /// @param pComplete Optional callback invoked when the device responds (or on error).
     void SendCommand(const std::string &cmd, std::function<void(std::string response)> pComplete = nullptr);
 
-     /// Retrieves the current input state (pressed panels) bitmask.
-     /// Each of the 16 bits represents the state of a panel.
-     uint16_t GetInputState() const { return m_iInputState.load(); }
+    /// Retrieves the current input state (pressed panels) bitmask.
+    uint16_t GetInputState() const { return m_iInputState.load(); }
 
-     /// Sets a callback to be invoked when input state (Report 3) changes from the USB polling thread.
-     /// This allows for immediate notification of input state changes without waiting for the main I/O thread.
-     /// @param cb Callback function with no parameters. Called immediately when input state changes.
-     void SetInputStateChangedCallback(std::function<void()> cb) { m_pInputStateChangedCallback = std::move(cb); }
+    /// Sets a callback to be invoked when input state (Report 3) changes from the USB polling thread.
+    /// @param cb Callback function with no parameters. Called immediately when input state changes.
+    void SetInputStateChangedCallback(std::function<void()> cb) { m_pInputStateChangedCallback = std::move(cb); }
 
     /// Polls for available USB data, called by the USB polling thread.
     /// Parses Report 3 (input state) inline and buffers Report 6 for the main thread.
@@ -190,28 +188,21 @@ private:
     /// @param buf Packet data including report ID as first byte.
     void HandleUsbPacket(const std::string &buf);
 
-     hid_device *m_pDevice = nullptr;                              // HID device handle
-     std::string m_sPath;                                          // HID device path
-     bool m_bActive = false;                                       // Whether device is sending input updates
-     bool m_bGotInfo = false;                                      // Whether device info has been retrieved
+    hid_device *m_pDevice = nullptr;
+    std::string m_sPath;
+    bool m_bActive = false;
+    bool m_bGotInfo = false;
 
-     std::list<std::string> m_sReadBuffers;                        // Completed packets ready to read
-     std::string m_sCurrentReadBuffer;                             // Packet being accumulated from fragments
+    std::list<std::string> m_sReadBuffers;
+    std::string m_sCurrentReadBuffer;
 
-     /// Input state is updated by the USB polling thread (Report 3 packets) via atomic operations.
-     /// Main thread reads via GetInputState(). Uses atomic<uint16_t> for lock-free updates.
-     /// Bit layout: 0-8 = panels, 9-15 = unused.
-     std::atomic<uint16_t> m_iInputState{0};
+    std::atomic<uint16_t> m_iInputState{0};
 
-     /// Data buffered by USB polling thread (both Report 3 and Report 6).
-     /// Report 3 packets are parsed inline within PollUSBData() and never buffered.
-     /// Report 6 packets are extracted and appended to this buffer for main thread processing.
-     /// Protected by m_Report6BufferMutex to prevent data race during concurrent access.
-     std::string m_sReport6Buffer;
-     std::mutex m_Report6BufferMutex;
+    std::string m_sReport6Buffer;
+    std::mutex m_Report6BufferMutex;
 
-     SMXDeviceInfo m_DeviceInfo;                                   // Cached device metadata
-     std::function<void()> m_pInputStateChangedCallback;           // Callback when input state changes from USB thread
+    SMXDeviceInfo m_DeviceInfo;
+    std::function<void()> m_pInputStateChangedCallback;
 
     /// Represents a command pending transmission or awaiting response.
     /// Commands may be fragmented into multiple 64-byte HID packets.
