@@ -37,8 +37,6 @@ SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
     m_iInputState(other.m_iInputState.load()),
     m_sReport6Buffer(std::move(other.m_sReport6Buffer)),
     m_DeviceInfo(other.m_DeviceInfo),
-    m_uReport3PacketsReceived(other.m_uReport3PacketsReceived.load()),
-    m_uReport6PacketsReceived(other.m_uReport6PacketsReceived.load()),
     m_aPendingCommands(std::move(other.m_aPendingCommands)),
     m_pCurrentCommand(std::move(other.m_pCurrentCommand))
 {
@@ -61,8 +59,6 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
         m_iInputState.store(other.m_iInputState.load());
         m_sReport6Buffer = std::move(other.m_sReport6Buffer);
         m_DeviceInfo = other.m_DeviceInfo;
-        m_uReport3PacketsReceived.store(other.m_uReport3PacketsReceived.load());
-        m_uReport6PacketsReceived.store(other.m_uReport6PacketsReceived.load());
         m_aPendingCommands = std::move(other.m_aPendingCommands);
         m_pCurrentCommand = std::move(other.m_pCurrentCommand);
         other.m_pDevice = nullptr;
@@ -210,7 +206,6 @@ void SMXDeviceConnection::CheckReads(string &sError)
             // Extract and process the complete packet
             string sPacket = m_sReport6Buffer.substr(processedBytes, packetLen);
             HandleUsbPacket(sPacket);
-            m_uReport6PacketsReceived++;
             bHasData = true;
             processedBytes += packetLen;
         }
@@ -501,7 +496,6 @@ void SMXDeviceConnection::QuickCheckForData(std::string &sError)
                 bInputStateChanged = true;
             }
             m_iInputState.store(newState);
-            m_uReport3PacketsReceived++;
         }
         else if(iReportId == 6)
         {

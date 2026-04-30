@@ -61,7 +61,6 @@ struct SMXDeviceInfo
 ///
 ///   Thread-Safe Atomics (lock-free):
 ///   - m_iInputState: std::atomic<uint16_t>, updated by USB thread, read by main thread
-///   - m_uReport3PacketsReceived, m_uReport6PacketsReceived: packet counters for validation
 ///
 ///   Protected by m_Report6BufferMutex (USB thread writes, main thread reads):
 ///   - m_sReport6Buffer: Report 6 packets accumulated by USB thread, consumed by CheckReads()
@@ -180,16 +179,6 @@ public:
      /// @return True if there are packets ready to be processed.
      bool HasPendingPackets() const { return !m_sReadBuffers.empty(); }
 
-     /// Returns the count of Report 3 (input state) packets successfully parsed.
-     /// Used for testing and validation to detect packet loss.
-     /// @return Number of Report 3 packets processed.
-     uint32_t GetReport3PacketCount() const { return m_uReport3PacketsReceived.load(); }
-
-     /// Returns the count of Report 6 (command/config) packets successfully parsed.
-     /// Used for testing and validation to detect packet loss.
-     /// @return Number of Report 6 packets processed.
-     uint32_t GetReport6PacketCount() const { return m_uReport6PacketsReceived.load(); }
-
 private:
     /// Sends a device info request packet to the device.
     /// The response is handled asynchronously in HandleUsbPacket() and sets m_bGotInfo.
@@ -237,12 +226,6 @@ private:
      SMXDeviceInfo m_DeviceInfo;                                   // Cached device metadata
      std::function<void()> m_pDataReadyCallback;                   // Callback when data is read from device
      std::function<void()> m_pInputStateChangedCallback;           // Callback when input state changes from USB thread
-
-     /// Packet counters for validation during testing.
-     /// These are incremented atomically by QuickCheckForData() (Report 3)
-     /// and CheckReads() (Report 6) to enable packet loss detection.
-     std::atomic<uint32_t> m_uReport3PacketsReceived{0};           // Count of Report 3 packets parsed
-     std::atomic<uint32_t> m_uReport6PacketsReceived{0};           // Count of Report 6 packets parsed
 
     /// Represents a command pending transmission or awaiting response.
     /// Commands may be fragmented into multiple 64-byte HID packets.
