@@ -5,6 +5,13 @@
 
 #include "SMX.h"
 
+// These are defined in SMX.cpp.
+namespace SMX {
+    double GetMonotonicTime();
+}
+
+using namespace SMX;
+
 volatile std::sig_atomic_t g_shouldExit = 0;
 
 void CustomLogCallback(const char *log)
@@ -45,6 +52,7 @@ void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, void *p
     if(SMX_REASON_IS(reason, SMXUpdateCallback_InputState))
     {
         const uint16_t state = SMX_GetInputState(pad);
+        printf("%6.3f: ", GetMonotonicTime());
         printf("Pad %i: input state %04x\n", pad, state);
     }
 }
