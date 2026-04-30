@@ -484,6 +484,12 @@ public:
         }
     }
 
+    void SetPollingRate(int iMainThreadMs, int iUSBPollingUs)
+    {
+        m_iMainThreadSleepMs.store(iMainThreadMs);
+        m_iUSBPollingSleepUs.store(iUSBPollingUs);
+    }
+
 private:
     /// Main loop for the USB polling thread. Runs continuously, checking both devices
     /// for available USB data and signaling the main I/O thread when data is found.
@@ -526,7 +532,7 @@ private:
 
             // Sleep 1ms before next cycle (provides ~1ms latency for input state updates)
             // Can be tuned lower for even lower latency at cost of more CPU
-            this_thread::sleep_for(chrono::milliseconds(1));
+            this_thread::sleep_for(chrono::microseconds(m_iUSBPollingSleepUs.load(memory_order_relaxed)));
         }
     }
     /// Main loop for the background I/O thread. Runs continuously until shutdown.
@@ -565,7 +571,7 @@ private:
             // The condition variable will wake immediately if SignalActivity()
             // is called, providing responsive event-based I/O. If no events
             // occur, we wake after the timeout to ensure timely polling.
-            m_Cond.wait_for(m_Lock, chrono::milliseconds(50));
+            m_Cond.wait_for(m_Lock, chrono::milliseconds(m_iMainThreadSleepMs.load(memory_order_relaxed)));
         }
         m_Lock.unlock();
     }
@@ -644,6 +650,8 @@ private:
     thread m_USBPollingThread;
     condition_variable_any m_Cond;
     atomic<bool> m_bShutdown{false};
+    atomic<int> m_iMainThreadSleepMs{50};
+    atomic<int> m_iUSBPollingSleepUs{1000};
     SMXDevice m_Devices[2];
     function<void(int, SMXUpdateCallbackReason)> m_Callback;
 };
@@ -726,6 +734,11 @@ SMX_API uint16_t SMX_GetInputState(const int pad)
 SMX_API void SMX_SetSerialNumbers()
 {
     if(g_pSMX) g_pSMX->SetSerialNumbers();
+}
+
+SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs)
+{
+    if(g_pSMX) g_pSMX->SetPollingRate(iMainThreadMs, iUSBPollingUs);
 }
 
 /// Returns the SDK version string.

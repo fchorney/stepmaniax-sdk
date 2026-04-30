@@ -1,4 +1,5 @@
 #include <csignal>
+#include <cstdlib>
 #include <iostream>
 #include <thread>
 
@@ -48,14 +49,24 @@ void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, void *p
     }
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     std::signal(SIGINT, signal_handler);
     SMX_SetLogCallback(CustomLogCallback);
 
     printf("SMX SDK Lite v%s\n", SMX_Version());
     SMX_Start(OnStateChanged, nullptr);
+
+    if(argc >= 2)
+    {
+        int mainMs = atoi(argv[1]);
+        int usbUs = argc >= 3 ? atoi(argv[2]) : 1000;
+        SMX_SetPollingRate(mainMs, usbUs);
+        printf("Polling rate: main thread %dms, USB thread %dus\n", mainMs, usbUs);
+    }
+
     printf("Scanning for StepManiaX devices... Press Ctrl+C to quit.\n");
+    printf("Usage: %s [main_thread_ms] [usb_polling_us]\n", argv[0]);
 
     while(!g_shouldExit)
     {

@@ -119,6 +119,15 @@ SMX_API uint16_t SMX_GetInputState(int pad);
 /// Note: Devices without a serial number show a hex string of all zeros or all F's.
 SMX_API void SMX_SetSerialNumbers();
 
+/// Configures the polling rates for the SDK's background threads.
+/// Can be called at any time after SMX_Start().
+///
+/// @param iMainThreadMs Sleep time in milliseconds for the main I/O thread (default: 50).
+///                      Controls how often device connections and command responses are processed.
+/// @param iUSBPollingUs Sleep time in microseconds for the USB polling thread (default: 1000).
+///                      Controls input state latency. Lower values = lower latency but more CPU.
+SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
+
 /// Returns the SDK version string.
 /// @return C-string containing the version (e.g., "0.1.0").
 SMX_API const char *SMX_Version();
