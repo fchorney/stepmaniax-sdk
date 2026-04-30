@@ -134,6 +134,13 @@ SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
 /// @return C-string containing the version (e.g., "0.1.0").
 SMX_API const char *SMX_Version();
 
+/// Returns the elapsed time in seconds since the SDK was initialized.
+/// This is useful for logging timestamps and measuring elapsed time.
+/// Uses a high-resolution monotonic clock that is not affected by system clock adjustments.
+///
+/// @return Elapsed time in seconds as a double (e.g., 1.234 for 1.234 seconds).
+SMX_API double SMX_GetMonotonicTime();
+
 /// Information about a connected SMX device.
 /// This structure holds the current connection state and device metadata.
 /// Query it with SMX_GetInfo() to detect devices and retrieve their properties.

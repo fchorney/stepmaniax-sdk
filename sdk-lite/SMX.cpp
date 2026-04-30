@@ -713,3 +713,12 @@ SMX_API const char *SMX_Version()
 {
     return SMX_VERSION;
 }
+
+/// Returns the elapsed time in seconds since the SDK was initialized.
+/// This is useful for logging timestamps and measuring elapsed time.
+/// @return Elapsed time in seconds as a double.
+SMX_API double SMX_GetMonotonicTime()
+{
+    return GetMonotonicTime();
+}
+
