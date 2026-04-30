@@ -173,7 +173,7 @@ void SMXDeviceConnection::CheckReads(string &sError)
         lock_guard<mutex> lock(m_Report6BufferMutex);
 
         // Parse complete packets from the Report 6 buffer.
-        // QuickCheckForData guarantees only complete packets are appended.
+        // PollUSBData guarantees only complete packets are appended.
         size_t processedBytes = 0;
         while(processedBytes + 3 <= m_sReport6Buffer.size())
         {
@@ -191,7 +191,7 @@ void SMXDeviceConnection::CheckReads(string &sError)
 
 /// Processes a single USB packet received from the device.
 /// Handles Report 6 (command/config response) packets only.
-/// Report 3 (input state) packets are processed inline by QuickCheckForData().
+/// Report 3 (input state) packets are processed inline by PollUSBData().
 ///
 /// Fragmentation handling for Report 6:
 /// - START_OF_COMMAND: clears partial data and begins new packet
@@ -387,7 +387,7 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
 /// - Report 6 buffering: Protected by m_Report6BufferMutex
 ///
 /// @param sError [out] Error message if a read fails.
-bool SMXDeviceConnection::QuickCheckForData(std::string &sError)
+bool SMXDeviceConnection::PollUSBData(std::string &sError)
 {
     if(!m_pDevice)
         return false;

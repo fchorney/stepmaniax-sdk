@@ -210,11 +210,11 @@ public:
         CallUpdateCallback(static_cast<SMXUpdateCallbackReason>(SMXUpdateCallback_Updated | SMXUpdateCallback_Disconnected));
     }
 
-    bool QuickCheckUSBData(string &sError)
+    bool PollUSBData(string &sError)
     {
         if(!m_Connection.IsConnected())
             return false;
-        return m_Connection.QuickCheckForData(sError);
+        return m_Connection.PollUSBData(sError);
     }
 
     /// Queues a command to be sent to this device asynchronously.
@@ -510,7 +510,7 @@ private:
                 for(int i = 0; i < 2; i++)
                 {
                     string sError;
-                    if(m_Devices[i].QuickCheckUSBData(sError))
+                    if(m_Devices[i].PollUSBData(sError))
                         bHasReport6Data = true;
 
                     if(!sError.empty())

@@ -45,7 +45,7 @@ struct SMXDeviceInfo
 /// This class is accessed by TWO independent threads simultaneously:
 ///
 /// 1. USB Polling Thread (every ~1ms, non-blocking):
-///    - Calls QuickCheckForData() to read raw HID packets
+///    - Calls PollUSBData() to read raw HID packets
 ///    - Parses Report 3 (input state) packets completely and inline
 ///    - Updates m_iInputState atomically (no lock needed)
 ///    - Extracts Report 6 (command/config) packets and appends to m_sReport6Buffer
@@ -78,7 +78,7 @@ struct SMXDeviceInfo
 /// PROTOCOL DETAILS:
 ///
 ///   Report 3 (Input State): 3 bytes [ID=3][low byte][high byte]
-///   - Parsed inline in QuickCheckForData(), never buffered
+///   - Parsed inline in PollUSBData(), never buffered
 ///   - Updates m_iInputState atomically with full 16-bit value
 ///   - Bit layout: 0-8 = panels, 9-15 = unused
 ///
@@ -167,7 +167,7 @@ public:
     /// Performs a fast non-blocking read of available HID data.
     /// Does not wait for responses or handle commands; just reads raw packets.
     /// @param sError [out] Error message if a read fails.
-    bool QuickCheckForData(std::string &sError);
+    bool PollUSBData(std::string &sError);
 
 private:
     /// Sends a device info request packet to the device.
@@ -207,7 +207,7 @@ private:
      std::atomic<uint16_t> m_iInputState{0};
 
      /// Data buffered by USB polling thread (both Report 3 and Report 6).
-     /// Report 3 packets are parsed inline within QuickCheckForData() and never buffered.
+     /// Report 3 packets are parsed inline within PollUSBData() and never buffered.
      /// Report 6 packets are extracted and appended to this buffer for main thread processing.
      /// Protected by m_Report6BufferMutex to prevent data race during concurrent access.
      std::string m_sReport6Buffer;
