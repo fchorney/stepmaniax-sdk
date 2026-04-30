@@ -121,6 +121,51 @@ mingw32-make
 
 **Note:** On Windows, no special driver or permissions setup is needed. The SMX pads use standard USB HID and work with the built-in HID driver.
 
+### Building as a Shared Library
+
+By default, the build produces a static library (`libsmx-lite.a` / `smx-lite.lib`). To build a shared library (`.so` / `.dylib` / `.dll`), add `-DBUILD_SHARED_LIBS=ON`:
+
+#### Linux
+
+```bash
+cmake .. -DBUILD_SHARED_LIBS=ON
+make
+# produces: libsmx-lite.so
+```
+
+#### macOS (Universal Binary — Intel + Apple Silicon)
+
+```bash
+cmake .. -DBUILD_SHARED_LIBS=ON
+make
+# produces: libsmx-lite.dylib (fat binary: x86_64 + arm64)
+```
+
+To build for a single architecture only:
+
+```bash
+cmake .. -DBUILD_SHARED_LIBS=ON -DCMAKE_OSX_ARCHITECTURES=arm64   # Apple Silicon only
+cmake .. -DBUILD_SHARED_LIBS=ON -DCMAKE_OSX_ARCHITECTURES=x86_64  # Intel only
+```
+
+#### Windows (MSVC / vcpkg)
+
+```powershell
+cmake .. -DBUILD_SHARED_LIBS=ON -DCMAKE_TOOLCHAIN_FILE=C:/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake --build . --config Release
+# produces: smx-lite.dll + smx-lite.lib (import library)
+```
+
+#### Windows (MSYS2 / MinGW)
+
+```bash
+cmake .. -DBUILD_SHARED_LIBS=ON -G "MinGW Makefiles"
+mingw32-make
+# produces: libsmx-lite.dll + libsmx-lite.dll.a
+```
+
+Only the public `SMX_*` API functions are exported from the shared library. All internal symbols are hidden.
+
 ## Running the sample
 
 After building, run the sample application:
@@ -128,6 +173,9 @@ After building, run the sample application:
 ```bash
 # Linux / macOS
 ./smx-sample
+
+# With custom polling rates (main thread ms, USB polling thread us)
+./smx-sample 50 500
 
 # Windows (from build directory)
 .\Release\smx-sample.exe   # vcpkg/MSVC
@@ -141,8 +189,10 @@ Example output:
 ```
 SMX SDK Lite v0.1.0
 Scanning for StepManiaX devices... Press Ctrl+C to quit.
-Pad 0 (P1, serial 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d, fw 5): input 0000
-Pad 0 (P1, serial 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d, fw 5): input 0010
+Usage: ./smx-sample [main_thread_ms] [usb_polling_us]
+Pad 0 connected (jumper: P1, serial: 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d, fw: 5)
+Pad 0: input state 0000
+Pad 0: input state 0010
 ```
 
 ## API overview
@@ -165,6 +215,9 @@ uint16_t SMX_GetInputState(int pad);
 
 // Assign serial numbers to controllers without one.
 void SMX_SetSerialNumbers();
+
+// Configure thread sleep intervals (main thread ms, USB polling thread us).
+void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
 
 // Get SDK version string.
 const char *SMX_Version();
