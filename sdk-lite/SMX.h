@@ -124,6 +124,8 @@ SMX_API void SMX_SetSerialNumbers();
 ///
 /// @param iMainThreadMs Sleep time in milliseconds for the main I/O thread (default: 50).
 ///                      Controls how often device connections and command responses are processed.
+///                      Values above ~100ms may delay device connection handshakes, causing
+///                      devices to appear uninitialized or missing serial numbers.
 /// @param iUSBPollingUs Sleep time in microseconds for the USB polling thread (default: 1000).
 ///                      Controls input state latency. Lower values = lower latency but more CPU.
 SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);

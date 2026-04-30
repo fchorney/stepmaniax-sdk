@@ -719,6 +719,8 @@ SMX_API void SMX_SetSerialNumbers()
 
 SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs)
 {
+    if(iMainThreadMs > 100)
+        Log(ssprintf("Warning: main thread sleep of %dms may delay device connections and cause missed serial numbers. Recommended: 50ms or below.", iMainThreadMs));
     if(g_pSMX) g_pSMX->SetPollingRate(iMainThreadMs, iUSBPollingUs);
 }
 

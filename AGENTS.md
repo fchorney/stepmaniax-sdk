@@ -29,8 +29,11 @@ SMXManager (singleton)
 
 **SDK Lite** (`sdk-lite/`):
 ```
-SMX namespace
-  ├─ SMXManager (simplified, non-platform-specific)
+SMXManager
+  ├─ USB Polling Thread (every ~1ms, configurable)
+  │   └─ PollUSBData() → parses Report 3 inline, buffers Report 6
+  ├─ Main I/O Thread (every ~50ms, configurable)
+  │   └─ Update() → processes Report 6, sends commands, manages connections
   ├─ SMXDevice[2]
   └─ SMXDeviceConnection (cross-platform via hidapi)
 ```
@@ -43,12 +46,22 @@ This three-layer design separates concerns:
 ## Threading Model: Async Background I/O
 
 **Critical pattern:** All I/O is nonblocking and asynchronous:
-- `SMX_Start()` spawns a background thread that manages all device communication
-- Callbacks (`SMXUpdateCallback`) fire from this background thread (NOT the main thread)
+- `SMX_Start()` spawns **two** background threads:
+  - **USB Polling Thread**: Reads HID data every ~1ms (configurable via `SMX_SetPollingRate`). Parses Report 3 (input state) inline and updates an atomic. Buffers Report 6 packets for the main thread.
+  - **Main I/O Thread**: Processes Report 6 (commands/config), manages connections, sends commands. Sleeps ~50ms (configurable) or wakes when Report 6 data arrives.
+- Callbacks (`SMXUpdateCallback`) fire from these background threads (NOT the application thread)
 - **User responsibility:** Callbacks must return quickly and not call `SMX_Stop()` or block on I/O
 - Setters (`SMX_SetConfig`, `SMX_SetLights`) return immediately; work happens in background
+- **Main thread sleep caveat:** The device connection handshake requires multiple main thread iterations (send device info request → process response → send config request → process response). High sleep values (e.g., 200ms+) can delay connection establishment and cause race conditions where the device appears uninitialized. Keep the main thread sleep at 50ms or below for reliable behavior.
 
-**Callback guarantee:** Even rapid state changes (input, config updates) queue cleanly—no missed events if callbacks are thread-safe.
+**Callback reasons** are bitmask flags (always includes `SMXUpdateCallback_Updated`):
+- `SMXUpdateCallback_Updated` — always set
+- `SMXUpdateCallback_InputState` — panel press/release changed
+- `SMXUpdateCallback_Connected` — device fully connected
+- `SMXUpdateCallback_Disconnected` — device disconnected
+- `SMXUpdateCallback_ConfigUpdated` — config received or updated
+
+Use `SMX_REASON_IS(reason, flag)` macro to check flags.
 
 ## Protocol Details: Command-Response over HID
 
@@ -89,7 +102,14 @@ make
 ./smx-sample
 ```
 
-**Key detail:** SDK Lite uses CMake and `hidapi-hidraw` (Linux) or `hidapi` (macOS/Windows). Build system probes multiple pkg-config variants for compatibility.
+For shared library builds:
+```bash
+cmake .. -DBUILD_SHARED_LIBS=ON
+make
+# produces: libsmx-lite.so / libsmx-lite.dylib / smx-lite.dll
+```
+
+**Key detail:** SDK Lite uses CMake and `hidapi-hidraw` (Linux) or `hidapi` (macOS/Windows). Build system probes multiple pkg-config variants for compatibility. On macOS, builds universal (x86_64 + arm64) by default.
 
 ## Configuration Versioning
 
@@ -207,7 +227,7 @@ The config tool uses these extensively in diagnostics UI.
 
 3. **Preserve the consolidation pattern.** `sdk-lite/SMX.cpp` intentionally merges multiple logical components (helpers, device, manager, API) into one file for easier distribution. Don't split it arbitrarily.
 
-4. **Thread-safety is implicit.** Background I/O thread context is already handled by `SMXManager`. Don't add extra locking unless specifically needed.
+4. **Thread-safety is implicit.** Background I/O thread context is already handled by `SMXManager`. Don't add extra locking unless specifically needed. The USB polling thread and main I/O thread share a recursive mutex; input state uses lock-free atomics.
 
 5. **Test both SDKs when touching protocol.** Changes to HID packet handling or device enumeration must work on Windows Full SDK too. Binary compatibility is critical.
 
@@ -217,4 +237,4 @@ The config tool uses these extensively in diagnostics UI.
 
 8. **For cross-platform testing:** Prioritize Linux testing (most common embedded target), then macOS (for development), then Windows (full features already supported by main SDK).
 
-9. **Report 3 Input State data should be the absolute top priority.** The main point of the SDK Lite is to absolutely prioritize the input state data path.
+9. **Report 3 Input State data should be the absolute top priority.** The main point of the SDK Lite is to absolutely prioritize the input state data path. The USB polling thread handles Report 3 with zero allocations on the hot path — keep it that way.
