@@ -169,58 +169,24 @@ void SMXDeviceConnection::CheckReads(string &sError)
 
     // Consume Report 6 packets from m_sReport6Buffer (populated by USB polling thread).
     // Process fragmented packets and queue complete ones for reading.
-    bool bHasData = false;
     {
         lock_guard<mutex> lock(m_Report6BufferMutex);
 
         // Parse complete packets from the Report 6 buffer.
+        // QuickCheckForData guarantees only complete packets are appended.
         size_t processedBytes = 0;
-        while(processedBytes < m_sReport6Buffer.size())
+        while(processedBytes + 3 <= m_sReport6Buffer.size())
         {
-            // Each packet starts with report ID. We need at least 1 byte.
-            if(processedBytes + 1 > m_sReport6Buffer.size())
-                break;
+            const size_t packetLen = 3 + static_cast<uint8_t>(m_sReport6Buffer[processedBytes + 2]);
 
-            const auto iReportId = static_cast<uint8_t>(m_sReport6Buffer[processedBytes]);
-
-            // We only expect Report 6 here; Report 3 is handled by USB polling thread.
-            if(iReportId != 6)
-            {
-                // Shouldn't happen, but skip unknown reports
-                processedBytes++;
-                continue;
-            }
-
-            // Report 6: variable length based on flags and payload size
-            // Format: [ID][flags][size][payload...]
-            if(processedBytes + 3 > m_sReport6Buffer.size())
-                break; // Not enough data for header
-
-            const int payloadSize = static_cast<uint8_t>(m_sReport6Buffer[processedBytes + 2]);
-            const size_t packetLen = 3 + payloadSize;
-
-            // Check if we have the complete packet
-            if(processedBytes + packetLen > m_sReport6Buffer.size())
-                break; // Incomplete packet, wait for more data
-
-            // Extract and process the complete packet
             string sPacket = m_sReport6Buffer.substr(processedBytes, packetLen);
             HandleUsbPacket(sPacket);
-            bHasData = true;
             processedBytes += packetLen;
         }
 
-        // Remove processed data, keep any incomplete packets for next call
         if(processedBytes > 0)
-        {
             m_sReport6Buffer = m_sReport6Buffer.substr(processedBytes);
-        }
     }
-
-    // Signal that data was read, allowing I/O thread to wake if callback is set.
-    // This enables responsive processing of command responses.
-    if(bHasData && m_pDataReadyCallback)
-        m_pDataReadyCallback();
 }
 
 /// Processes a single USB packet received from the device.
@@ -233,26 +199,8 @@ void SMXDeviceConnection::CheckReads(string &sError)
 /// - HOST_CMD_FINISHED: invokes command callback if present
 void SMXDeviceConnection::HandleUsbPacket(const string &buf)
 {
-    if(buf.empty())
-        return;
-
-    const auto iReportId = static_cast<uint8_t>(buf[0]);
-
-    // Only process Report 6 packets; Report 3 is handled by QuickCheckForData()
-    if(iReportId != 6)
-        return;
-
-    // Command/config response report
-    if(buf.size() < 3)
-        return;
-
     const int cmd = static_cast<uint8_t>(buf[1]);      // Command/flags byte
     const int bytes = static_cast<uint8_t>(buf[2]);    // Payload length
-    if(static_cast<int>(buf.size()) < 3 + bytes)
-    {
-        Log("Communication error: oversized packet (ignored)");
-        return;
-    }
 
     string sPacket(buf.begin() + 3, buf.begin() + 3 + bytes);
 
@@ -439,112 +387,67 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
 /// - Report 6 buffering: Protected by m_Report6BufferMutex
 ///
 /// @param sError [out] Error message if a read fails.
-void SMXDeviceConnection::QuickCheckForData(std::string &sError)
+bool SMXDeviceConnection::QuickCheckForData(std::string &sError)
 {
     if(!m_pDevice)
-        return;
+        return false;
 
-    // Read all available data from HID buffer into a temporary local buffer.
-    std::string localReadBuffer;
+    // Read and parse HID packets directly from the device.
+    // The common case is a single 3-byte Report 3 (input state) packet per call.
+    // By parsing inline we avoid intermediate buffer allocations entirely for Report 3.
+    std::string report6Packets;
     unsigned char rawbuf[64];
+
     while(true)
     {
         const int res = hid_read(m_pDevice, rawbuf, 64);
         if(res < 0)
         {
             sError = "Error reading from device";
-            return;
+            return false;
         }
         if(res == 0)
             break;
 
-        // Append fresh HID data to local buffer.
-        localReadBuffer.append(std::string(reinterpret_cast<char*>(rawbuf), res));
-    }
+        if(res < 1)
+            continue;
 
-    if(localReadBuffer.empty())
-        return;
+        const uint8_t iReportId = rawbuf[0];
 
-    // Now parse the local buffer, separating Report 3 (input state) from Report 6 (commands).
-    size_t processedBytes = 0;
-    std::string report6Packets; // Accumulate Report 6 packets to add to buffer in one operation
-    bool bInputStateChanged = false;   // Track if input state changed
-
-    while(processedBytes < localReadBuffer.size())
-    {
-        // Each packet starts with report ID. We need at least 1 byte.
-        if(processedBytes + 1 > localReadBuffer.size())
-            break;
-
-        const auto iReportId = static_cast<uint8_t>(localReadBuffer[processedBytes]);
-        size_t packetLen = 0;
-
-        // Determine packet length based on report type
         if(iReportId == 3)
         {
-            // Input state report: 3 bytes total (ID + 2 bytes payload)
-            // Parse and update m_iInputState atomically (no function call overhead)
-            if(processedBytes + 3 > localReadBuffer.size())
-                break; // Incomplete packet, leave for next cycle
+            // Input state report: 3 bytes (ID + 2 bytes little-endian state)
+            if(res < 3)
+                continue;
 
-            packetLen = 3;
-            // Update input state directly: little-endian 16-bit value
-            const uint16_t newState = (static_cast<uint8_t>(localReadBuffer[processedBytes + 2]) << 8) |
-                                     static_cast<uint8_t>(localReadBuffer[processedBytes + 1]);
-            if(m_iInputState.load() != newState)
+            const uint16_t newState = (rawbuf[2] << 8) | rawbuf[1];
+            if(m_iInputState.load(std::memory_order_relaxed) != newState)
             {
-                bInputStateChanged = true;
+                m_iInputState.store(newState, std::memory_order_relaxed);
+                if(m_pInputStateChangedCallback)
+                    m_pInputStateChangedCallback();
             }
-            m_iInputState.store(newState);
         }
         else if(iReportId == 6)
         {
-            // Command/config report: variable length based on flags and payload size
-            // Format: [ID][flags][size][payload...]
-            if(processedBytes + 3 > localReadBuffer.size())
-                break; // Not enough data for header (keep incomplete for next cycle)
+            // Command/config report: variable length [ID][flags][size][payload...]
+            if(res < 3)
+                continue;
 
-            const int payloadSize = static_cast<uint8_t>(localReadBuffer[processedBytes + 2]);
-            packetLen = 3 + payloadSize;
+            const int payloadSize = rawbuf[2];
+            const int packetLen = 3 + payloadSize;
+            if(res < packetLen)
+                continue;
 
-            // Check if we have the complete packet
-            if(processedBytes + packetLen > localReadBuffer.size())
-                break; // Incomplete packet, leave for next cycle
-
-            // Extract this Report 6 packet and queue it for main thread processing
-            string sPacket = localReadBuffer.substr(processedBytes, packetLen);
-            report6Packets.append(sPacket);
+            report6Packets.append(reinterpret_cast<char*>(rawbuf), packetLen);
         }
-        else
-        {
-            // Unknown report type, skip it
-            processedBytes++;
-            continue;
-        }
-
-        processedBytes += packetLen;
     }
 
-    // If we parsed any Report 6 packets, add them to the buffer for main thread processing.
-    // Use the mutex to ensure thread-safe updates to m_sReport6Buffer.
     if(!report6Packets.empty())
     {
         lock_guard<mutex> lock(m_Report6BufferMutex);
         m_sReport6Buffer.append(report6Packets);
+        return true;
     }
-
-    // If input state changed, fire the input state changed callback.
-    // This allows immediate notification of input changes from the USB polling thread.
-    if(bInputStateChanged && m_pInputStateChangedCallback)
-    {
-        m_pInputStateChangedCallback();
-    }
-
-    // If we processed any Report 3 (input state) packets, signal the data-ready callback.
-    // This allows the main thread to wake and handle the input state change immediately,
-    // rather than waiting for the next 50ms poll cycle.
-    if(bInputStateChanged && m_pDataReadyCallback)
-    {
-        m_pDataReadyCallback();
-    }
+    return false;
 }

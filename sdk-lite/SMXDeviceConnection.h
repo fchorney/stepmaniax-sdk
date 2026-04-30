@@ -73,7 +73,7 @@ struct SMXDeviceInfo
 ///
 ///   Main Thread Only (no synchronization needed):
 ///   - m_pDevice, m_sPath, m_DeviceInfo: immutable after Open()
-///   - m_pDataReadyCallback: only modified during setup
+///   - m_pInputStateChangedCallback: only modified during setup
 ///
 /// PROTOCOL DETAILS:
 ///
@@ -158,12 +158,6 @@ public:
      /// Each of the 16 bits represents the state of a panel.
      uint16_t GetInputState() const { return m_iInputState.load(); }
 
-     /// Sets a callback to be invoked when data is successfully read from the device.
-     /// This is used to signal the I/O thread that stage status or other data is ready
-     /// to be processed, enabling event-based waking instead of polling.
-     /// @param cb Callback function with no parameters. Called when device sends data.
-     void SetDataReadyCallback(std::function<void()> cb) { m_pDataReadyCallback = std::move(cb); }
-
      /// Sets a callback to be invoked when input state (Report 3) changes from the USB polling thread.
      /// This allows for immediate notification of input state changes without waiting for the main I/O thread.
      /// @param cb Callback function with no parameters. Called immediately when input state changes.
@@ -173,11 +167,7 @@ public:
     /// Performs a fast non-blocking read of available HID data.
     /// Does not wait for responses or handle commands; just reads raw packets.
     /// @param sError [out] Error message if a read fails.
-    void QuickCheckForData(std::string &sError);
-
-     /// Checks if any packets are pending in the read buffer.
-     /// @return True if there are packets ready to be processed.
-     bool HasPendingPackets() const { return !m_sReadBuffers.empty(); }
+    bool QuickCheckForData(std::string &sError);
 
 private:
     /// Sends a device info request packet to the device.
@@ -224,7 +214,6 @@ private:
      std::mutex m_Report6BufferMutex;
 
      SMXDeviceInfo m_DeviceInfo;                                   // Cached device metadata
-     std::function<void()> m_pDataReadyCallback;                   // Callback when data is read from device
      std::function<void()> m_pInputStateChangedCallback;           // Callback when input state changes from USB thread
 
     /// Represents a command pending transmission or awaiting response.

@@ -155,7 +155,6 @@ public:
     SMXDevice(SMXDevice &&other) noexcept:
         m_pLock(other.m_pLock),
         m_pUpdateCallback(std::move(other.m_pUpdateCallback)),
-        m_pActivityCallback(std::move(other.m_pActivityCallback)),
         m_Connection(std::move(other.m_Connection)),
         m_Config(other.m_Config),
         m_bHaveConfig(other.m_bHaveConfig)
@@ -169,7 +168,6 @@ public:
         {
             m_pLock = other.m_pLock;
             m_pUpdateCallback = std::move(other.m_pUpdateCallback);
-            m_pActivityCallback = std::move(other.m_pActivityCallback);
             m_Connection = std::move(other.m_Connection);
             m_Config = other.m_Config;
             m_bHaveConfig = other.m_bHaveConfig;
@@ -191,9 +189,6 @@ public:
     /// Sets a callback to signal activity to the manager's event system.
     /// Called when I/O operations complete to wake the I/O thread, including when
     /// device data is ready to read.
-    /// @param cb Callback function with no parameters.
-    void SetActivityCallback(function<void()> cb) { m_pActivityCallback = std::move(cb); }
-
     /// Provides access to the underlying device connection for specialized handling.
     /// Used by the manager to enable data-ready signaling.
     /// @return Pointer to the SMXDeviceConnection instance.
@@ -206,28 +201,13 @@ public:
     /// @return True if the device was successfully opened, false otherwise.
     bool OpenDevice(const string &sPath, string &sError)
     {
-        const bool result = m_Connection.Open(sPath, sError);
-        if(result && m_pActivityCallback)
-        {
-            m_pActivityCallback();
-        }
-        return result;
+        return m_Connection.Open(sPath, sError);
     }
 
-    /// Sets the data-ready callback on the connection, enabling the manager
-    /// to wake when the device sends status updates.
+    /// Sets the input state changed callback on the connection, enabling immediate
+    /// notification when device input state changes.
     void SetConnectionCallbacks()
     {
-        // Create a lambda that signals activity when device data arrives
-        auto dataReadySignal = [this]()
-        {
-            if(m_pActivityCallback)
-            {
-                m_pActivityCallback();
-            }
-        };
-        m_Connection.SetDataReadyCallback(dataReadySignal);
-
         // Create a lambda that fires input state callback immediately
         auto inputStateSignal = [this]()
         {
@@ -275,11 +255,6 @@ public:
             return;
         }
         m_Connection.SendCommand(cmd, pComplete);
-        // Signal the manager's I/O thread to wake and process this command.
-        if(m_pActivityCallback)
-        {
-            m_pActivityCallback();
-        }
     }
 
     /// Retrieves the current device information (connection status, player number, serial).
@@ -369,26 +344,14 @@ public:
     /// Report 6 packets are buffered for the main I/O thread to process.
     /// The lock is already held by the caller (USB polling thread).
     /// @param sError [out] Error message if a read fails.
-    void QuickCheckUSBData(string &sError)
+    /// @return True if Report 6 data was buffered for the main thread.
+    bool QuickCheckUSBData(string &sError)
     {
         if(!m_Connection.IsConnected())
-        {
-            return;
-        }
+            return false;
 
-        // Perform a quick check for USB data availability.
-        // This reads HID packets, parses Report 3 (input state) inline and updates m_iInputState atomically,
-        // and buffers Report 6 (command) packets for the main thread to process.
-        m_Connection.QuickCheckForData(sError);
+        return m_Connection.QuickCheckForData(sError);
     }
-
-    /// Check if this device has pending Report 6 packets ready for processing by main thread.
-    /// @return True if Report 6 packets are buffered and waiting for main thread processing.
-    bool HasPendingReport6Packets() const
-    {
-        return m_Connection.HasPendingPackets();
-    }
-
 private:
     /// Checks if the device is fully connected (has valid connection, device info, and config).
     /// @return True if all required state has been initialized.
@@ -470,7 +433,6 @@ private:
 
     recursive_mutex *m_pLock = nullptr;
     function<void(int, SMXUpdateCallbackReason)> m_pUpdateCallback;
-    function<void()> m_pActivityCallback;
     SMXDeviceConnection m_Connection;
     SMXConfig m_Config;
     bool m_bHaveConfig = false;
@@ -501,14 +463,10 @@ public:
     explicit SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callback):
         m_Callback(callback)
     {
-        // Create a shared lambda that captures 'this' to signal activity on the manager.
-        auto activitySignal = [this]() { SignalActivity(); };
-
         for(auto & m_Device : m_Devices)
         {
             m_Device.SetLock(&m_Lock);
             m_Device.SetUpdateCallback(callback);
-            m_Device.SetActivityCallback(activitySignal);
             m_Device.SetConnectionCallbacks();
         }
         m_Thread = thread([this] { ThreadMain(); });
@@ -558,13 +516,6 @@ public:
         }
     }
 
-    /// Signals the I/O thread to wake up and process pending events.
-    /// Called by devices or external code when I/O activity occurs.
-    void SignalActivity()
-    {
-        m_Cond.notify_all();
-    }
-
 private:
     /// Main loop for the USB polling thread. Runs continuously, checking both devices
     /// for available USB data and signaling the main I/O thread when data is found.
@@ -590,23 +541,12 @@ private:
                 // Check both devices for available USB data
                 for(int i = 0; i < 2; i++)
                 {
-                    // Call QuickCheckUSBData on the device to read any available data
-                    // This is non-blocking and returns immediately
                     string sError;
-                    m_Devices[i].QuickCheckUSBData(sError);
+                    if(m_Devices[i].QuickCheckUSBData(sError))
+                        bHasReport6Data = true;
 
                     if(!sError.empty())
-                    {
-                        // Don't break on error, try other device
                         Log(ssprintf("USB polling error on device %i: %s", i, sError.c_str()));
-                    }
-
-                    // Check if device has any Report 6 (command) packets waiting for main thread
-                    // Input state (Report 3) is already updated atomically by QuickCheckForData
-                    if(m_Devices[i].HasPendingReport6Packets())
-                    {
-                        bHasReport6Data = true;
-                    }
                 }
             }
 
@@ -700,9 +640,6 @@ private:
             pSlot->OpenDevice(sPath, sError);
             if(!sError.empty())
                 Log("Error opening device: " + sError);
-            else
-                // Signal activity when a device is successfully opened.
-                SignalActivity();
         }
         hid_free_enumeration(devs);
     }
