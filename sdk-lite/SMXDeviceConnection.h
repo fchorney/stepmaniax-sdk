@@ -163,10 +163,10 @@ public:
      /// @param cb Callback function with no parameters. Called immediately when input state changes.
      void SetInputStateChangedCallback(std::function<void()> cb) { m_pInputStateChangedCallback = std::move(cb); }
 
-    /// Quick check for USB data, called by the USB polling thread.
-    /// Performs a fast non-blocking read of available HID data.
-    /// Does not wait for responses or handle commands; just reads raw packets.
+    /// Polls for available USB data, called by the USB polling thread.
+    /// Parses Report 3 (input state) inline and buffers Report 6 for the main thread.
     /// @param sError [out] Error message if a read fails.
+    /// @return True if Report 6 data was buffered.
     bool PollUSBData(std::string &sError);
 
 private:
@@ -185,11 +185,8 @@ private:
     /// @param sError [out] Error message if a write fails.
     void CheckWrites(std::string &sError);
 
-    /// Processes a single USB packet received from the device.
-    /// Handles:
-    /// - Report ID 3: Input state (panel press data)
-    /// - Report ID 6: Command/config packets with fragmentation flags
-    /// Updates m_iInputState and queues complete packets to m_sReadBuffers.
+    /// Processes a single Report 6 USB packet received from the device.
+    /// Handles command/config packets with fragmentation flags.
     /// @param buf Packet data including report ID as first byte.
     void HandleUsbPacket(const std::string &buf);
 

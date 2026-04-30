@@ -412,16 +412,10 @@ private:
 // Manages the lifecycle of all connected StepManiaX devices. This class is
 // responsible for:
 // - Enumerating and discovering SMX devices via HID
-// - Maintaining an I/O thread that updates device state each frame
+// - Running a USB polling thread for low-latency input state updates
+// - Running a main I/O thread for device connections, commands, and config
 // - Ensuring proper device ordering (Player 1 and Player 2)
 // - Notifying the application of device state changes via callbacks
-//
-// All device state is protected by a recursive mutex to allow thread-safe
-// access from both the I/O thread and application threads.
-//
-// The I/O thread uses event-based waking: it waits for device events or
-// the shutdown signal, waking on 50ms timeout if no events occur. This
-// provides responsive I/O without busy-polling.
 
 class SMXManager
 {
@@ -493,16 +487,13 @@ public:
 private:
     /// Main loop for the USB polling thread. Runs continuously, checking both devices
     /// for available USB data and signaling the main I/O thread when data is found.
-    /// This thread runs frequently (every 1ms) to provide responsive input state updates,
-    /// while the main I/O thread can run less frequently without impacting responsiveness.
     ///
     /// The USB polling thread:
     /// - Continuously reads from both HID devices (non-blocking)
     /// - Parses Report 3 (input state) packets inline and updates m_iInputState atomically
     /// - Buffers Report 6 (command/config) packets for main thread processing
     /// - Signals the main thread if Report 6 packets are found
-    /// - Never blocks, maintaining consistent latency
-    /// - Sleeps only 1ms between checks
+    /// - Sleep interval is configurable via SMX_SetPollingRate (default: 1000us)
     void USBPollingThreadMain()
     {
         while(!m_bShutdown)
@@ -530,8 +521,7 @@ private:
                 m_Cond.notify_all();
             }
 
-            // Sleep 1ms before next cycle (provides ~1ms latency for input state updates)
-            // Can be tuned lower for even lower latency at cost of more CPU
+            // Configurable sleep between poll cycles
             this_thread::sleep_for(chrono::microseconds(m_iUSBPollingSleepUs.load(memory_order_relaxed)));
         }
     }
@@ -540,12 +530,7 @@ private:
     /// - Attempts to connect to any newly discovered devices
     /// - Updates each connected device's state
     /// - Ensures devices are in the correct order (Player 1, then Player 2)
-    /// - Waits for device events or 50ms timeout before the next iteration
-    ///
-    /// The thread respects event-based notifications: it will wake immediately
-    /// if SignalActivity() is called, or after 50ms if no events occur. This
-    /// provides responsive I/O on event-capable platforms while maintaining
-    /// compatibility with polling-only scenarios.
+    /// - Waits for Report 6 data or timeout before the next iteration
     void ThreadMain()
     {
         m_Lock.lock();
@@ -560,17 +545,13 @@ private:
                 if(!sError.empty())
                 {
                     Log(ssprintf("Device %i error: %s", i, sError.c_str()));
-                    string path = m_Devices[i].GetDevicePath();
                     m_Devices[i].CloseDevice();
                 }
             }
 
             CorrectDeviceOrder();
 
-            // Wait for device events or shutdown signal with 50ms timeout.
-            // The condition variable will wake immediately if SignalActivity()
-            // is called, providing responsive event-based I/O. If no events
-            // occur, we wake after the timeout to ensure timely polling.
+            // Wait for Report 6 data from USB polling thread, or timeout.
             m_Cond.wait_for(m_Lock, chrono::milliseconds(m_iMainThreadSleepMs.load(memory_order_relaxed)));
         }
         m_Lock.unlock();

@@ -185,7 +185,7 @@ void SMXDeviceConnection::CheckReads(string &sError)
         }
 
         if(processedBytes > 0)
-            m_sReport6Buffer = m_sReport6Buffer.substr(processedBytes);
+            m_sReport6Buffer.erase(0, processedBytes);
     }
 }
 
@@ -264,13 +264,13 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
         m_pCurrentCommand = nullptr;
     }
 
-        // END_OF_COMMAND: queue complete packet for reading
-        if(cmd & PACKET_FLAG_END_OF_COMMAND)
-        {
-            if(!m_sCurrentReadBuffer.empty())
-                m_sReadBuffers.push_back(m_sCurrentReadBuffer);
-            m_sCurrentReadBuffer.clear();
-        }
+    // END_OF_COMMAND: queue complete packet for reading
+    if(cmd & PACKET_FLAG_END_OF_COMMAND)
+    {
+        if(!m_sCurrentReadBuffer.empty())
+            m_sReadBuffers.push_back(m_sCurrentReadBuffer);
+        m_sCurrentReadBuffer.clear();
+    }
 }
 
 /// Sends the next pending command to the device if no command is currently in flight.
@@ -372,21 +372,14 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
     m_aPendingCommands.push_back(pCmd);
 }
 
-/// Quick check for USB data called by the USB polling thread every 1ms.
+/// Polls for USB data, called by the USB polling thread.
 ///
-/// This method handles Report 3 (input state) packets completely and inline,
+/// Handles Report 3 (input state) packets completely and inline,
 /// updating m_iInputState atomically. Report 6 (command/config) packets are
 /// extracted and buffered in m_sReport6Buffer for the main I/O thread to process.
 ///
-/// This separation ensures input state is checked and updated every 1ms with
-/// minimal latency, while command/config handling is deferred to the main thread.
-///
-/// Threading model:
-/// - Called by: USB polling thread (every ~1ms)
-/// - Input state updates: Atomic operations (no lock needed)
-/// - Report 6 buffering: Protected by m_Report6BufferMutex
-///
 /// @param sError [out] Error message if a read fails.
+/// @return True if Report 6 data was buffered.
 bool SMXDeviceConnection::PollUSBData(std::string &sError)
 {
     if(!m_pDevice)
