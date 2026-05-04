@@ -40,7 +40,10 @@ else()
     set(HIDAPI_INCLUDE_DIRS "${HIDAPI_INCLUDE_DIRS_PARENT}")
 endif()
 
-# Library (use -DBUILD_SHARED_LIBS=ON for shared, default is static)
+# Library (shared by default; use -DBUILD_SHARED_LIBS=OFF for static)
+option(BUILD_SHARED_LIBS "Build shared libraries" ON)
+option(BUILD_SAMPLE "Build the sample application" OFF)
+
 add_library(smx-lite
     SMXConfigPacket.cpp
     SMXDeviceConnection.cpp
@@ -71,5 +74,7 @@ if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
 endif()
 
 # Sample
-add_executable(smx-sample sample.cpp)
-target_link_libraries(smx-sample PRIVATE smx-lite)
+if(BUILD_SAMPLE)
+    add_executable(smx-sample sample.cpp)
+    target_link_libraries(smx-sample PRIVATE smx-lite)
+endif()

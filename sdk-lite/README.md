@@ -121,47 +121,41 @@ mingw32-make
 
 **Note:** On Windows, no special driver or permissions setup is needed. The SMX pads use standard USB HID and work with the built-in HID driver.
 
-### Building as a Shared Library
+### Build Options
 
-By default, the build produces a static library (`libsmx-lite.a` / `smx-lite.lib`). To build a shared library (`.so` / `.dylib` / `.dll`), add `-DBUILD_SHARED_LIBS=ON`:
+By default, the build produces a **shared library** (`libsmx-lite.so` / `libsmx-lite.dylib` / `smx-lite.dll`). The sample application is **not** built by default.
 
-#### Linux
+| Option | Default | Description |
+|--------|---------|-------------|
+| `BUILD_SHARED_LIBS` | `ON` | Build shared library (set to `OFF` for static) |
+| `BUILD_SAMPLE` | `OFF` | Build the sample application |
 
 ```bash
-cmake .. -DBUILD_SHARED_LIBS=ON
-make
-# produces: libsmx-lite.so
+cmake ..                                  # shared lib only (default)
+cmake .. -DBUILD_SAMPLE=ON               # shared lib + sample
+cmake .. -DBUILD_SHARED_LIBS=OFF         # static lib only
+cmake .. -DBUILD_SHARED_LIBS=OFF -DBUILD_SAMPLE=ON  # static lib + sample
 ```
 
-#### macOS (Universal Binary — Intel + Apple Silicon)
+#### macOS architecture options
 
 ```bash
-cmake .. -DBUILD_SHARED_LIBS=ON
-make
-# produces: libsmx-lite.dylib (fat binary: x86_64 + arm64)
-```
-
-To build for a single architecture only:
-
-```bash
-cmake .. -DBUILD_SHARED_LIBS=ON -DCMAKE_OSX_ARCHITECTURES=arm64   # Apple Silicon only
-cmake .. -DBUILD_SHARED_LIBS=ON -DCMAKE_OSX_ARCHITECTURES=x86_64  # Intel only
+cmake .. -DCMAKE_OSX_ARCHITECTURES=arm64   # Apple Silicon only
+cmake .. -DCMAKE_OSX_ARCHITECTURES=x86_64  # Intel only
 ```
 
 #### Windows (MSVC / vcpkg)
 
 ```powershell
-cmake .. -DBUILD_SHARED_LIBS=ON -DCMAKE_TOOLCHAIN_FILE=C:/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake
 cmake --build . --config Release
-# produces: smx-lite.dll + smx-lite.lib (import library)
 ```
 
 #### Windows (MSYS2 / MinGW)
 
 ```bash
-cmake .. -DBUILD_SHARED_LIBS=ON -G "MinGW Makefiles"
+cmake .. -G "MinGW Makefiles"
 mingw32-make
-# produces: libsmx-lite.dll + libsmx-lite.dll.a
 ```
 
 Only the public `SMX_*` API functions are exported from the shared library. All internal symbols are hidden.
