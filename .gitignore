@@ -1,5 +1,6 @@
 .vs
 *.user
-build
+build*
 obj
 out
+/.idea
